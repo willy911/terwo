@@ -66,10 +66,10 @@ function badgeOff(t) { return '<span class="badge badge-off">' + dot() + esc(t) 
 function badgeWarn(t) { return '<span class="badge badge-warn">' + dot() + esc(t) + '</span>'; }
 
 // ---------- tabs (one slug per page) ----------
-const TAB_SLUGS = { dashboard: 'dashboard', web: 'website', db: 'database', files: 'files', cron: 'cron', backup: 'backup', settings: 'settings', term: 'terminal', install: 'store' };
+const TAB_SLUGS = { dashboard: 'dashboard', web: 'website', db: 'database', files: 'files', cron: 'cron', backup: 'backup', tunnel: 'tunnel', settings: 'settings', term: 'terminal', install: 'store' };
 const SLUG_TABS = {};
 for (const k of Object.keys(TAB_SLUGS)) SLUG_TABS[TAB_SLUGS[k]] = k;
-const TAB_TITLES = { dashboard: 'Dashboard', web: 'Website', db: 'Database', files: 'File Manager', cron: 'Cron', backup: 'Backup', settings: 'Settings', term: 'Terminal', install: 'Store' };
+const TAB_TITLES = { dashboard: 'Dashboard', web: 'Website', db: 'Database', files: 'File Manager', cron: 'Cron', backup: 'Backup', tunnel: 'Tunnel', settings: 'Settings', term: 'Terminal', install: 'Store' };
 function tabFromPath() { return SLUG_TABS[location.pathname.replace(/^\/+|\/+$/g, '')] || 'dashboard'; }
 function showTab(id, push) {
   if (!TAB_SLUGS[id]) id = 'dashboard';
@@ -84,6 +84,7 @@ function showTab(id, push) {
   if (id === 'cron') loadCron();
   if (id === 'term') termTabOpen();
   if (id === 'backup') loadBackups();
+  if (id === 'tunnel') { loadTunnel(); startTunnelPoll(); } else stopTunnelPoll();
   if (id === 'settings') loadSettings();
   if (push) history.pushState({ tab: id }, '', '/' + TAB_SLUGS[id]);
   refreshIcons();
@@ -905,6 +906,60 @@ document.getElementById('cj-add').addEventListener('click', async () => {
   const j = await r.json();
   if (j.ok) { document.getElementById('cj-name').value = ''; document.getElementById('cj-cmd').value = ''; loadCron(); }
   else err.textContent = j.error || 'Failed';
+});
+
+// ---------- tunnel (Cloudflare auto tunneling) ----------
+let tunnelTimer = null;
+function startTunnelPoll() { stopTunnelPoll(); tunnelTimer = setInterval(loadTunnel, 5000); }
+function stopTunnelPoll() { if (tunnelTimer) { clearInterval(tunnelTimer); tunnelTimer = null; } }
+async function loadTunnel() {
+  try {
+    const j = await (await api('/api/tunnel')).json();
+    const sw = document.getElementById('tun-switch');
+    sw.checked = !!(j.running || j.enabled);
+    document.getElementById('tun-mode').value = j.mode || 'quick';
+    document.getElementById('tun-token-row').style.display = (j.mode === 'token') ? '' : 'none';
+    if (j.hostname) document.getElementById('tun-host').value = j.hostname;
+    if (j.targetPort) document.getElementById('tun-port').placeholder = 'panel ini (' + j.targetPort + ')';
+    const st = document.getElementById('tun-status');
+    st.innerHTML = j.running ? (j.url ? badgeOk('Tunnel aktif') : badgeWarn('Tunnel starting…')) : badgeOff('Tunnel mati');
+    const urlEl = document.getElementById('tun-url');
+    const showUrl = j.url || (j.mode === 'token' && j.hostname ? 'https://' + j.hostname : '');
+    urlEl.innerHTML = showUrl ? '<a class="font-mono text-[13px] text-accent-h underline" target="_blank" rel="noopener" href="' + esc(showUrl) + '">' + esc(showUrl) + '</a>' : '<span class="muted text-sm">Belum ada URL publik</span>';
+    urlEl.dataset.url = showUrl;
+    document.getElementById('tun-log').textContent = j.logs || '—';
+    refreshIcons();
+  } catch { /* ignore */ }
+}
+document.getElementById('tun-mode').addEventListener('change', (e) => {
+  document.getElementById('tun-token-row').style.display = (e.target.value === 'token') ? '' : 'none';
+});
+document.getElementById('tun-switch').addEventListener('change', async (e) => {
+  const err = document.getElementById('tun-err');
+  err.textContent = '';
+  if (e.target.checked) {
+    const r = await api('/api/tunnel/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: document.getElementById('tun-mode').value,
+        targetPort: document.getElementById('tun-port').value.trim(),
+        token: document.getElementById('tun-token').value.trim(),
+        hostname: document.getElementById('tun-host').value.trim() }),
+    });
+    const j = await r.json();
+    if (!j.ok && j.error) { err.textContent = j.error; e.target.checked = false; }
+    else document.getElementById('tun-token').value = '';
+  } else {
+    await api('/api/tunnel/stop', { method: 'POST' }).catch(() => {});
+  }
+  loadTunnel();
+});
+document.getElementById('tun-copy').addEventListener('click', async () => {
+  const u = document.getElementById('tun-url').dataset.url || '';
+  if (!u) return;
+  try { await navigator.clipboard.writeText(u); } catch {
+    const t = document.createElement('textarea'); t.value = u; document.body.appendChild(t);
+    t.select(); document.execCommand('copy'); t.remove();
+  }
 });
 
 // ---------- backup ----------

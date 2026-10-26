@@ -1,4 +1,4 @@
-# Terwo v1.13.0
+# Terwo v1.14.0
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -84,9 +84,20 @@ PANEL_PORT=9000 node panel.js
 ## Features
 
 - **Clean URL slugs** — every page has its own slug: `/login`, `/dashboard`,
-  `/website`, `/database`, `/files`, `/cron`, `/backup`, `/settings`,
-  `/terminal`, `/store`. No `.html` extensions anywhere (old `.html` URLs
-  redirect to the new slugs).
+  `/website`, `/database`, `/files`, `/cron`, `/backup`, `/tunnel`,
+  `/settings`, `/terminal`, `/store`. No `.html` extensions anywhere (old
+  `.html` URLs redirect to the new slugs).
+- **🌩️ Tunnel (auto tunneling)** — menu Tunnel baru: satu saklar, tunnel
+  langsung nyala. Mode **Quick** tanpa akun Cloudflare (URL acak
+  `*.trycloudflare.com`, berubah tiap restart tunnel) atau mode **Named**
+  dengan token tunnel dari dashboard Cloudflare Zero Trust (hostname tetap).
+  Target default = panel ini, bisa diarahkan ke port lain (mis. website yang
+  di-host panel). Saklar ON tersimpan di `~/.termux-panel/tunnel.json`
+  (mode 0600, token tak pernah dikembalikan API) — panel restart (PM2
+  resurrect) otomatis menyalakan lagi tunnelnya, dan tunnel yang putus
+  otomatis dicoba nyalakan ulang setelah 5 detik. Butuh `cloudflared`
+  (install 1-klik dari Store). Perhatian: tunnel membuka panel ke internet
+  publik — pastikan password panel kuat sebelum mengaktifkan.
 - **Login** — username + password (PBKDF2 hash), HttpOnly session cookie.
 - **Dark/light mode** — dark by default, icon-only sun/moon toggle in the
   sidebar header; choice is stored in the browser (terminal is always dark).
