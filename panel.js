@@ -1405,6 +1405,124 @@ function healthCheckOnce() {
 }
 setInterval(() => { try { healthCheckOnce(); } catch (e) { console.log('Health check failed:', e.message); } }, 60000);
 
+// ================= Cloudflare Tunnel (auto tunneling) =================
+// Satu saklar di UI = tunnel langsung jalan + diingat, sehingga panel yang
+// restart (mis. via PM2 resurrect) otomatis menyalakan lagi tunnel yang sama.
+// Dua mode:
+//   - quick: `cloudflared tunnel --url ...` tanpa akun Cloudflare; URL
+//     *.trycloudflare.com acak, berubah tiap tunnel restart.
+//   - token: tunnel bernama dari dashboard Cloudflare (Zero Trust);
+//     tempel token tunnel-nya, hostname tetap sesuai konfigurasi di CF.
+// Token TIDAK PERNAH dikembalikan lewat API; yang disimpan di disk pun
+// memakai mode 0600 seperti config panel lainnya.
+const TUNNEL_FILE = path.join(DATA_DIR, 'tunnel.json');
+function loadTunnelCfg() {
+  try {
+    const c = JSON.parse(fs.readFileSync(TUNNEL_FILE, 'utf8'));
+    return { enabled: !!c.enabled, mode: c.mode === 'token' ? 'token' : 'quick',
+      targetPort: parseInt(c.targetPort, 10) || PORT,
+      token: String(c.token || ''), hostname: String(c.hostname || '') };
+  } catch { return { enabled: false, mode: 'quick', targetPort: PORT, token: '', hostname: '' }; }
+}
+function saveTunnelCfg(c) {
+  fs.writeFileSync(TUNNEL_FILE, JSON.stringify(c, null, 2), { mode: 0o600 });
+}
+let tunnelCfg = loadTunnelCfg();
+let tunnelProc = null, tunnelUrl = '', tunnelLogs = [], tunnelStartedAt = 0;
+let tunnelStopping = false, tunnelRestartTimer = null;
+function tunnelPushLog(line) {
+  tunnelLogs.push(line);
+  if (tunnelLogs.length > 200) tunnelLogs.splice(0, tunnelLogs.length - 200);
+}
+function tunnelPublic() {
+  return { running: !!tunnelProc, enabled: tunnelCfg.enabled, mode: tunnelCfg.mode,
+    targetPort: tunnelCfg.targetPort, hostname: tunnelCfg.hostname,
+    hasToken: !!tunnelCfg.token, url: tunnelUrl,
+    startedAt: tunnelStartedAt, logs: tunnelLogs.join('').slice(-4000) };
+}
+async function startTunnel(cfg) {
+  if (tunnelProc) return tunnelPublic();
+  await mustBin('cloudflared', 'cloudflared is not installed. Install it first via the Store menu.');
+  const targetPort = parseInt(cfg.targetPort, 10);
+  if (!targetPort || targetPort < 1 || targetPort > 65535) throw new Error('Target port must be 1-65535');
+  let args;
+  if (cfg.mode === 'token') {
+    const token = String(cfg.token || '').trim();
+    if (!token || !/^[A-Za-z0-9._-]+$/.test(token)) {
+      throw new Error('Token Cloudflare wajib diisi (tempel token tunnel dari dashboard Cloudflare Zero Trust)');
+    }
+    args = ['tunnel', '--no-autoupdate', 'run', '--token', token];
+  } else {
+    args = ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:' + targetPort];
+  }
+  tunnelCfg = { enabled: true, mode: cfg.mode, targetPort, token: cfg.token || '', hostname: cfg.hostname || '' };
+  saveTunnelCfg(tunnelCfg);
+  tunnelStopping = false;
+  if (tunnelRestartTimer) { clearTimeout(tunnelRestartTimer); tunnelRestartTimer = null; }
+  tunnelUrl = ''; tunnelStartedAt = Date.now();
+  const child = spawn('cloudflared', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  tunnelProc = child;
+  let buf = '';
+  const onData = (d) => {
+    buf += d.toString('utf8');
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const line of lines) {
+      tunnelPushLog(line + '\n');
+      if (!tunnelUrl) {
+        const m = line.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+        if (m) tunnelUrl = m[0];
+      }
+    }
+  };
+  child.stdout.on('data', onData);
+  child.stderr.on('data', onData);
+  child.on('error', (e) => {
+    tunnelPushLog('--- tunnel failed to start: ' + e.message + ' ---\n');
+    tunnelProc = null;
+    tunnelCfg.enabled = false; saveTunnelCfg(tunnelCfg);
+  });
+  child.on('exit', (code) => {
+    tunnelPushLog('--- tunnel stopped (exit ' + code + ') ---\n');
+    tunnelProc = null;
+    // Auto-reconnect: kalau saklar masih ON (bukan stop manual), nyalakan lagi.
+    if (!tunnelStopping && tunnelCfg.enabled && !tunnelRestartTimer) {
+      tunnelRestartTimer = setTimeout(() => {
+        tunnelRestartTimer = null;
+        if (tunnelCfg.enabled && !tunnelProc) {
+          startTunnel(tunnelCfg).catch((e) => tunnelPushLog('--- auto-restart failed: ' + e.message + ' ---\n'));
+        }
+      }, 5000);
+    }
+  });
+  return tunnelPublic();
+}
+function stopTunnel() {
+  tunnelStopping = true;
+  if (tunnelRestartTimer) { clearTimeout(tunnelRestartTimer); tunnelRestartTimer = null; }
+  tunnelCfg.enabled = false; saveTunnelCfg(tunnelCfg);
+  if (tunnelProc) { try { tunnelProc.kill(); } catch { /* ignore */ } tunnelProc = null; }
+  tunnelUrl = '';
+  tunnelPushLog('--- tunnel stopped by user ---\n');
+  return tunnelPublic();
+}
+async function apiTunnelGet(res) {
+  sendJson(res, 200, tunnelPublic());
+}
+async function apiTunnelStart(req, res) {
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const mode = b.mode === 'token' ? 'token' : 'quick';
+  // Token kosong = pakai token yang sudah tersimpan (kalau ada).
+  const token = (b.token || '').trim() || (mode === 'token' ? tunnelCfg.token : '');
+  const cfg = { mode,
+    targetPort: b.targetPort ? parseInt(b.targetPort, 10) : (mode === tunnelCfg.mode ? tunnelCfg.targetPort : PORT),
+    token, hostname: (b.hostname || '').trim() || tunnelCfg.hostname };
+  sendJson(res, 200, Object.assign({ ok: true }, await startTunnel(cfg)));
+}
+function apiTunnelStop(res) {
+  sendJson(res, 200, Object.assign({ ok: true }, stopTunnel()));
+}
+
 // ================= HTTP server =================
 const server = http.createServer((req, res) => {
   handleRequest(req, res).catch((e) => {
@@ -1415,7 +1533,7 @@ const server = http.createServer((req, res) => {
 
 // App pages served by clean slugs (no .html). Each slug renders the same
 // shell; the client activates the matching tab from the URL path.
-const APP_PAGES = new Set(['dashboard', 'website', 'database', 'files', 'cron', 'backup', 'settings', 'terminal', 'store']);
+const APP_PAGES = new Set(['dashboard', 'website', 'database', 'files', 'cron', 'backup', 'tunnel', 'settings', 'terminal', 'store']);
 
 async function handleRequest(req, res) {
   try {
@@ -1556,6 +1674,10 @@ async function handleRequest(req, res) {
       if (bkm[3] === 'restore' && req.method === 'POST') return apiBackupRestore(req, res, bkm[1]);
       if (!bkm[3] && req.method === 'DELETE') return apiBackupDelete(res, bkm[1]);
     }
+    // cloudflare tunnel (auto tunneling)
+    if (req.method === 'GET' && p === '/api/tunnel') return apiTunnelGet(res);
+    if (req.method === 'POST' && p === '/api/tunnel/start') return apiTunnelStart(req, res);
+    if (req.method === 'POST' && p === '/api/tunnel/stop') return apiTunnelStop(res);
     // file manager tambahan
     if (req.method === 'POST' && p === '/api/files/zip') return apiFileZip(req, res);
     if (req.method === 'POST' && p === '/api/files/unzip') return apiFileUnzip(req, res);
@@ -1616,6 +1738,10 @@ server.on('upgrade', (req, socket, head) => {
 
 server.listen(PORT, HOST, () => {
   try { startTelegramPoll(); } catch { /* ignore */ }
+  // Auto tunneling: saklar yang masih ON sebelum restart langsung jalan lagi.
+  if (tunnelCfg.enabled) {
+    startTunnel(tunnelCfg).catch((e) => console.log('Auto tunnel failed:', e.message));
+  }
   console.log('Terwo running at http://' + HOST + ':' + PORT);
   console.log('Working directory: ' + ROOT);
   if (HOST === '0.0.0.0') {
