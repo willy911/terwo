@@ -27,6 +27,7 @@
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="files"><i data-lucide="folder" class="h-[19px] w-[19px]"></i><span>File Manager</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="cron"><i data-lucide="clock" class="h-[19px] w-[19px]"></i><span>Cron</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="backup"><i data-lucide="archive" class="h-[19px] w-[19px]"></i><span>Backup</span></button>
+    <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="tunnel"><i data-lucide="cloud" class="h-[19px] w-[19px]"></i><span>Tunnel</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="settings"><i data-lucide="settings" class="h-[19px] w-[19px]"></i><span>Settings</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="term"><i data-lucide="square-terminal" class="h-[19px] w-[19px]"></i><span>Terminal</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="install"><i data-lucide="store" class="h-[19px] w-[19px]"></i><span>Store</span></button>
@@ -50,6 +51,7 @@
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="files"><i data-lucide="folder" class="h-4 w-4"></i><span>Files</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="cron"><i data-lucide="clock" class="h-4 w-4"></i><span>Cron</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="backup"><i data-lucide="archive" class="h-4 w-4"></i><span>Backup</span></button>
+    <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="tunnel"><i data-lucide="cloud" class="h-4 w-4"></i><span>Tunnel</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="settings"><i data-lucide="settings" class="h-4 w-4"></i><span>Settings</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="term"><i data-lucide="square-terminal" class="h-4 w-4"></i><span>Terminal</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="install"><i data-lucide="store" class="h-4 w-4"></i><span>Store</span></button>
@@ -270,6 +272,38 @@
   </section>
 
   <!-- ============ SETTINGS ============ -->
+  <!-- ============ TUNNEL (Cloudflare auto tunneling) ============ -->
+  <section id="tab-tunnel" class="tabpane">
+    <div class="mb-5"><h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><i data-lucide="cloud" class="h-5 w-5 text-accent-h"></i>Tunnel</h2></div>
+    <div class="card">
+      <div class="frow">
+        <label class="lbl-check"><input id="tun-switch" type="checkbox" class="h-4 w-4 accent-accent">Auto tunneling: aktifkan = tunnel langsung nyala, dan otomatis nyala lagi saat panel restart</label>
+        <span id="tun-status" class="muted text-sm">checking…</span>
+      </div>
+      <div class="frow">
+        <label class="lbl">Mode
+          <select id="tun-mode" class="inp">
+            <option value="quick">Quick Tunnel (tanpa akun, URL acak *.trycloudflare.com)</option>
+            <option value="token">Named Tunnel (hostname tetap, pakai token Cloudflare)</option>
+          </select>
+        </label>
+        <label class="lbl">Target port<input id="tun-port" class="inp" type="number" placeholder="(kosong = panel ini)"></label>
+      </div>
+      <div class="frow" id="tun-token-row">
+        <label class="lbl">Tunnel token (Cloudflare Zero Trust)<input id="tun-token" class="inp font-mono" type="password" placeholder="Tempel token tunnel… (kosong = pakai token tersimpan)"></label>
+        <label class="lbl">Hostname (opsional, untuk tampilan)<input id="tun-host" class="inp" placeholder="e.g. panel.example.com"></label>
+      </div>
+      <div class="frow">
+        <span id="tun-url"></span>
+        <button id="tun-copy" class="btn-ghost btn-sm"><i data-lucide="copy" class="h-4 w-4"></i>Copy URL</button>
+        <span id="tun-err" class="err"></span>
+      </div>
+      <p class="hint">Butuh paket cloudflared — install 1-klik dari menu Store kalau belum ada. Perhatian: tunnel membuka panel ke internet publik; pastikan password panel kuat sebelum mengaktifkan.</p>
+      <h4 class="mb-2 mt-4 text-sm font-semibold">Log Tunnel</h4>
+      <pre id="tun-log" class="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[12.5px] text-muted">—</pre>
+    </div>
+  </section>
+
   <section id="tab-settings" class="tabpane">
     <div class="mb-5"><h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><i data-lucide="settings" class="h-5 w-5 text-accent-h"></i>Settings</h2></div>
     <div class="card mb-4">
