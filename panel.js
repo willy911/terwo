@@ -2467,20 +2467,16 @@ async function cfUpsertDns(hostname) {
       { type: 'CNAME', name: hostname, content: target, proxied: true, ttl: 1 });
   }
 }
-async function cfPublishSiteDomain(site, hostnameInput) {
-  if (!cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId || !cfCfg.domain) {
-    throw new Error('Konfigurasi Cloudflare belum lengkap — isi API token, Account ID, Zone ID, dan domain di Settings dulu');
-  }
-  const hostname = cfNormalizeHostname(hostnameInput, cfCfg.domain);
-  cfValidateHostname(hostname, cfCfg.domain);
-  const clash = sites.find((s) => s.id !== site.id && s.tunnel && s.tunnel.hostname === hostname);
-  if (clash) throw new Error('Hostname ' + hostname + ' sudah dipakai site lain (' + clash.name + ')');
+// Tulis satu rule ingress + DNS CNAME untuk hostname (dipakai site auto dan
+// domain panel). Gagal DNS me-rollback ingress; gagal tulis konfigurasi
+// karena tunnel hilang ditangani pemanggil (cfPublishRouteResilient).
+async function cfPublishRoute(hostname, service) {
   await cfEnsureTunnel();
   const { config, ingress } = await cfGetIngress();
   const orig = ingress.slice();
   const catchAll = ingress.find((r) => !r.hostname) || { service: 'http_status:404' };
   const rules = ingress.filter((r) => r.hostname && r.hostname !== hostname);
-  rules.push({ hostname, service: 'http://127.0.0.1:' + site.port });
+  rules.push({ hostname, service });
   rules.push(catchAll);
   await cfPutIngress(rules, config);
   try { await cfUpsertDns(hostname); }
@@ -2489,6 +2485,34 @@ async function cfPublishSiteDomain(site, hostnameInput) {
     throw new Error('DNS Cloudflare gagal (' + e.message + ') — route dibatalkan');
   }
   return hostname;
+}
+function cfIsTunnelNotFound(e) {
+  const m = e && e.message ? e.message : '';
+  return /Tunnel not found/.test(m) || (/\(HTTP 404\)/.test(m) && /code 1002/.test(m));
+}
+// Perbaikan v1.20.5 (celah v1.20.4): tunnel tersimpan bisa hilang di tengah
+// jalan (mis. dihapus di dashboard) — panggilan CEK tunnel yang 404 memang
+// dibuat ulang oleh cfEnsureTunnel, tapi panggilan TULIS konfigurasi yang
+// 404 dulu lolos mentah ke user. Di sini: bila tulis gagal karena tunnel
+// tidak ditemukan, buang ID tunnel tersimpan, buat tunnel baru, coba sekali
+// lagi. Gagal kedua (atau gagal bukan karena tunnel hilang) diteruskan apa adanya.
+async function cfPublishRouteResilient(hostname, service) {
+  try { return await cfPublishRoute(hostname, service); }
+  catch (e) {
+    if (!cfIsTunnelNotFound(e)) throw e;
+    cfCfg.tunnelId = ''; cfCfg.tunnelToken = ''; saveCfCfg();
+    return await cfPublishRoute(hostname, service);
+  }
+}
+async function cfPublishSiteDomain(site, hostnameInput) {
+  if (!cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId || !cfCfg.domain) {
+    throw new Error('Konfigurasi Cloudflare belum lengkap — isi API token, Account ID, Zone ID, dan domain di Settings dulu');
+  }
+  const hostname = cfNormalizeHostname(hostnameInput, cfCfg.domain);
+  cfValidateHostname(hostname, cfCfg.domain);
+  const clash = sites.find((s) => s.id !== site.id && s.tunnel && s.tunnel.hostname === hostname);
+  if (clash) throw new Error('Hostname ' + hostname + ' sudah dipakai site lain (' + clash.name + ')');
+  return cfPublishRouteResilient(hostname, 'http://127.0.0.1:' + site.port);
 }
 async function cfUnpublishSiteDomain(site) {
   const hostname = site.tunnel && site.tunnel.hostname;
@@ -2624,20 +2648,7 @@ async function cfPublishPanelDomain(hostnameInput) {
   cfValidateHostname(hostname, cfCfg.domain);
   const clash = sites.find((s) => s.tunnel && s.tunnel.hostname === hostname);
   if (clash) throw new Error('Hostname ' + hostname + ' sudah dipakai website ' + clash.name + ' — pakai subdomain lain untuk panel');
-  await cfEnsureTunnel();
-  const { config, ingress } = await cfGetIngress();
-  const orig = ingress.slice();
-  const catchAll = ingress.find((r) => !r.hostname) || { service: 'http_status:404' };
-  const rules = ingress.filter((r) => r.hostname && r.hostname !== hostname);
-  rules.push({ hostname, service: 'http://127.0.0.1:' + PORT });
-  rules.push(catchAll);
-  await cfPutIngress(rules, config);
-  try { await cfUpsertDns(hostname); }
-  catch (e) {
-    try { await cfPutIngress(orig.length ? orig : [{ service: 'http_status:404' }], config); } catch {}
-    throw new Error('DNS Cloudflare gagal (' + e.message + ') — route dibatalkan');
-  }
-  return hostname;
+  return cfPublishRouteResilient(hostname, 'http://127.0.0.1:' + PORT);
 }
 async function cfUnpublishPanelDomain(hostname) {
   if (!hostname || !cfCfg.tunnelId || !cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId) return;
@@ -2659,8 +2670,11 @@ async function apiPanelDomainSet(req, res) {
   const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
   if (b.enabled) {
     // Publikasikan dulu SEBELUM enabled disimpan, supaya gagal API tidak
-    // meninggalkan domain panel dalam keadaan "aktif" palsu.
-    const hostname = await cfPublishPanelDomain(b.subdomain || b.hostname || 'panel');
+    // meninggalkan domain panel dalam keadaan "aktif" palsu. Error dilabeli
+    // fasenya (publish vs connector) supaya tidak mentah seperti v1.20.4.
+    let hostname;
+    try { hostname = await cfPublishPanelDomain(b.subdomain || b.hostname || 'panel'); }
+    catch (e) { throw new Error('Aktifkan domain panel gagal (publish route/DNS): ' + e.message); }
     cfCfg.panelDomain = { enabled: true, hostname }; saveCfCfg();
     try { await startPanelDomainRunner(); }
     catch (e) {
@@ -2668,7 +2682,7 @@ async function apiPanelDomainSet(req, res) {
       // total supaya tidak ada route publik tanpa connector.
       await cfUnpublishPanelDomain(hostname);
       cfCfg.panelDomain = { enabled: false, hostname: '' }; saveCfCfg();
-      throw e;
+      throw new Error('Aktifkan domain panel gagal (menjalankan connector): ' + e.message);
     }
     sendJson(res, 200, Object.assign({ ok: true }, panelDomainPublic()));
   } else {

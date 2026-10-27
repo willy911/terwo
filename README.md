@@ -1,4 +1,4 @@
-# Terwo v1.20.4
+# Terwo v1.20.5
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -185,6 +185,7 @@ PANEL_PORT=9000 node panel.js
 - **Bugfix kolom Akses website (v1.20.2)** — tunnel Named (token) tidak pernah mencetak URL `trycloudflare` di log cloudflared, jadi `url` selalu kosong dan baris website macet di "Tunnel starting…" walau tunnel sudah tersambung. Sekarang kolom Akses menampilkan link `https://<hostname>` untuk mode Named maupun Domain Otomatis; bila hostname kosong, labelnya jujur: proses Named jalan, domain diatur di dashboard Cloudflare.
 - **Error Setup & Uji yang jelas (v1.20.3)** — dulu Setup & Uji hanya menampilkan pesan mentah Cloudflare ("Authentication error", HTTP 403) tanpa menyebut langkah mana yang gagal. Sekarang tiap langkah dilabeli (1/3 verifikasi token, 2/3 cek zone, 3/3 buat/cek tunnel) beserta hint untuk 403, dan kode error Cloudflare ikut ditampilkan bila ada.
 - **Domain Panel Otomatis (v1.20.4)** — panel Terwo sendiri bisa punya domain (mis. `panel.flaznexa.cloud`) tanpa buka dashboard Cloudflare: kartu "Domain untuk Panel" di menu Tunnel, ketik subdomain lalu Aktifkan — Terwo memakai konfigurasi Domain Otomatis + tunnel bersama yang sama untuk membuat route ingress (`hostname → http://127.0.0.1:<port panel>`, rule lain dipertahankan, catch-all terakhir) dan DNS CNAME proxied, lalu menjalankan connector cloudflared sendiri untuk tunnel bersama (boleh berdampingan dengan connector site auto; auto-reconnect + auto-start saat panel restart). Nonaktifkan sengaja MENGHAPUS route + DNS (beda dengan site yang Stop-nya mempertahankan route) supaya halaman login panel tidak menggantung publik. Syarat: Domain Otomatis di Settings sudah Setup &amp; Uji (Siap); tanpa itu Aktifkan ditolak dengan pesan jelas. Beda dengan Tunnel Panel Named: di sana routing diatur manual di dashboard Zero Trust, di sini diatur Terwo lewat API.
+- **Bugfix publish tahan tunnel hilang (v1.20.5)** — aktivasi Domain Panel di HP gagal mentah "Tunnel not found (404)": tunnel tersimpan bisa hilang di tengah jalan (mis. dihapus di dashboard), dan dulu hanya panggilan *cek* tunnel yang 404 yang dibuat ulang, sementara panggilan *tulis* konfigurasi yang 404 lolos mentah ke user. Sekarang publish route (site auto maupun domain panel) memakai `cfPublishRouteResilient`: bila tulis gagal karena tunnel tidak ditemukan, ID tunnel tersimpan dibuang, tunnel baru dibuat, dan publish dicoba sekali lagi; gagal kedua diteruskan apa adanya. Error Aktifkan domain panel juga dilabeli fasenya (publish route/DNS vs menjalankan connector).
 
 The **🌐 Website** tab has four sub-tabs:
 
