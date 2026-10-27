@@ -66,11 +66,11 @@ function badgeOff(t) { return '<span class="badge badge-off">' + dot() + esc(t) 
 function badgeWarn(t) { return '<span class="badge badge-warn">' + dot() + esc(t) + '</span>'; }
 
 // ---------- tabs (one slug per page) ----------
-const TAB_SLUGS = { dashboard: 'dashboard', web: 'website', db: 'database', files: 'files', cron: 'cron', backup: 'backup', settings: 'settings', term: 'terminal', install: 'store', ai: 'ai' };
+const TAB_SLUGS = { dashboard: 'dashboard', web: 'website', tunnel: 'tunnel', db: 'database', files: 'files', cron: 'cron', backup: 'backup', settings: 'settings', term: 'terminal', install: 'store', ai: 'ai' };
 const SLUG_TABS = {};
 for (const k of Object.keys(TAB_SLUGS)) SLUG_TABS[TAB_SLUGS[k]] = k;
-const TAB_TITLES = { dashboard: 'Dashboard', web: 'Website', db: 'Database', files: 'File Manager', cron: 'Cron', backup: 'Backup', settings: 'Settings', term: 'Terminal', install: 'Store', ai: 'AI Chat' };
-function tabFromPath() { const slug = location.pathname.replace(/^\/+|\/+$/g, ''); if (slug === 'tunnel') return 'web'; return SLUG_TABS[slug] || 'dashboard'; } // link /tunnel lama dialihkan ke Website
+const TAB_TITLES = { dashboard: 'Dashboard', web: 'Website', tunnel: 'Tunnel', db: 'Database', files: 'File Manager', cron: 'Cron', backup: 'Backup', settings: 'Settings', term: 'Terminal', install: 'Store', ai: 'AI Chat' };
+function tabFromPath() { const slug = location.pathname.replace(/^\/+|\/+$/g, ''); return SLUG_TABS[slug] || 'dashboard'; } // /tunnel kini tab Tunnel sendiri (v1.20.1)
 function showTab(id, push) {
   if (!TAB_SLUGS[id]) id = 'dashboard';
   document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === id));
@@ -85,7 +85,8 @@ function showTab(id, push) {
   if (id === 'cron') loadCron();
   if (id === 'term') termTabOpen();
   if (id === 'backup') loadBackups();
-  if (id === 'settings') { tunModeSynced = false; loadSettings(); loadTunnel(); loadCf(); startTunnelPoll(); } else stopTunnelPoll();
+  if (id === 'settings') { loadSettings(); loadCf(); }
+  if (id === 'tunnel') { tunModeSynced = false; loadTunnel(); startTunnelPoll(); } else stopTunnelPoll();
   if (push) history.pushState({ tab: id }, '', '/' + TAB_SLUGS[id]);
   refreshIcons();
 }
@@ -1408,7 +1409,7 @@ document.getElementById('cf-setup').addEventListener('click', async () => {
 });
 
 // ---------- tunnel (Cloudflare auto tunneling) ----------
-// BUGFIX (v1.20.0): loadTunnel dipanggil tiap 5 detik selama tab Settings
+// BUGFIX (v1.20.0): loadTunnel dipanggil tiap 5 detik selama tab Tunnel
 // dibuka, dan dulu ia SELALU menimpa dropdown mode + baris token dengan
 // mode server. Akibatnya pilihan "Named Tunnel" yang baru dipilih user
 // kembali jadi Quick dan baris token menghilang sendiri dalam <5 detik —

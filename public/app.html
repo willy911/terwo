@@ -23,6 +23,7 @@
   <nav class="flex flex-1 flex-col gap-1 overflow-y-auto px-3">
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text active" data-tab="dashboard"><i data-lucide="layout-dashboard" class="h-[19px] w-[19px]"></i><span>Dashboard</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="web"><i data-lucide="globe" class="h-[19px] w-[19px]"></i><span>Website</span></button>
+    <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="tunnel"><i data-lucide="cloud" class="h-[19px] w-[19px]"></i><span>Tunnel</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="db"><i data-lucide="database" class="h-[19px] w-[19px]"></i><span>Database</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="ai"><i data-lucide="sparkles" class="h-[19px] w-[19px]"></i><span>AI Chat</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="files"><i data-lucide="folder" class="h-[19px] w-[19px]"></i><span>File Manager</span></button>
@@ -47,6 +48,7 @@
   <nav class="flex gap-2 overflow-x-auto px-4 py-3">
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted active" data-tab="dashboard"><i data-lucide="layout-dashboard" class="h-4 w-4"></i><span>Dashboard</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="web"><i data-lucide="globe" class="h-4 w-4"></i><span>Website</span></button>
+    <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="tunnel"><i data-lucide="cloud" class="h-4 w-4"></i><span>Tunnel</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="db"><i data-lucide="database" class="h-4 w-4"></i><span>Database</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="ai"><i data-lucide="sparkles" class="h-4 w-4"></i><span>AI Chat</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="files"><i data-lucide="folder" class="h-4 w-4"></i><span>Files</span></button>
@@ -345,9 +347,10 @@
     </div>
   </section>
 
-  <!-- ============ SETTINGS ============ -->
-  <section id="tab-settings" class="tabpane">
-    <div class="mb-5"><h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><i data-lucide="settings" class="h-5 w-5 text-accent-h"></i>Settings</h2></div>
+  <!-- ============ TUNNEL (panel) ============ -->
+  <section id="tab-tunnel" class="tabpane">
+    <div class="mb-5"><h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><i data-lucide="cloud" class="h-5 w-5 text-accent-h"></i>Tunnel</h2></div>
+    <p class="hint mb-4">Tunnel untuk panel Terwo ini sendiri (bukan website). Tunnel per website tetap diatur di menu Website, kolom Akses: Stay Local / Tunneling.</p>
     <div class="card mb-4">
       <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="cloud" class="h-4 w-4 text-accent-h"></i>Tunnel Panel</h4>
       <p class="hint mb-3">Ini tunnel untuk panel Terwo ini sendiri (bukan website). Tunnel per website diatur di menu Website, kolom Akses: Stay Local / Tunneling.</p>
@@ -377,6 +380,12 @@
       <h4 class="mb-2 mt-4 text-sm font-semibold">Log Tunnel</h4>
       <pre id="tun-log" class="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[12.5px] text-muted">—</pre>
     </div>
+  </section>
+
+  <!-- ============ SETTINGS ============ -->
+  <section id="tab-settings" class="tabpane">
+    <div class="mb-5"><h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><i data-lucide="settings" class="h-5 w-5 text-accent-h"></i>Settings</h2></div>
+    
     <div class="card mb-4">
       <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="globe" class="h-4 w-4 text-accent-h"></i>Domain Otomatis (Cloudflare API)</h4>
       <p class="hint mb-3">Sekali diisi, tiap website mode <b>Domain Otomatis</b> cukup ketik subdomain — Terwo yang membuat route + DNS CNAME-nya di Cloudflare, tanpa buka dashboard. Satu tunnel bersama (<span id="cf-tunnel-note">terwo</span>) dipakai semua site mode ini.</p>
