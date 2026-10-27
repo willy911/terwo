@@ -1,4 +1,4 @@
-# Terwo v1.19.1
+# Terwo v1.20.0
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -178,6 +178,8 @@ PANEL_PORT=9000 node panel.js
 
 ### Website menu
 - Tunnel per website: modal Atur kini menampilkan log `cloudflared` (refresh tiap 3 detik selama modal dibuka) — termasuk log terakhir setelah tunnel mati, jadi penyebab gagal start tetap bisa dibaca.
+- **Domain Otomatis (Cloudflare API, v1.20.0)** — isi sekali di Settings → kartu Domain Otomatis: API Token (permission Account → Cloudflare Tunnel → Edit dan Zone → DNS → Edit, dibatasi ke akun + zone itu), Account ID, Zone ID, domain, dan nama tunnel (default `terwo`). Setelah itu tiap website mode **Domain Otomatis** cukup ketik subdomain (`app2` atau `app2.domainmu`) — panel membuat tunnel bersama bila belum ada, menambahkan route ingress (`hostname → http://127.0.0.1:<port>`, rule lain dipertahankan, catch-all terakhir), dan membuat/memperbarui DNS CNAME proxied ke `<tunnel-id>.cfargotunnel.com`. API token + token tunnel disimpan di `~/.termux-panel/cloudflare.json` (0600) dan tidak pernah dikembalikan lewat API. Stop/Stay Local **tidak** menghapus route + DNS (supaya aktif lagi instan); pencabutan eksplisit lewat tombol **Hapus Domain** di modal Atur atau saat site dihapus.
+- **Bugfix Settings → Tunnel Panel (v1.20.0)** — dulu `loadTunnel` yang dipoll tiap 5 detik selalu menimpa dropdown Mode + baris token dengan mode server, sehingga pilihan Named Tunnel yang baru dipilih kembali jadi Quick dan baris token menghilang sendiri dalam <5 detik. Sekarang mode/baris token hanya disinkronkan saat tab Settings dibuka atau saat mode server benar-benar berubah; field Hostname juga tidak ditimpa saat sedang diketik.
 
 The **🌐 Website** tab has four sub-tabs:
 

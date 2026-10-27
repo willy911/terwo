@@ -442,6 +442,11 @@ async function apiSiteRestart(req, res, id) {
 
 async function apiSiteDelete(req, res, id) {
   try { stopSiteTunnel(id, true); } catch {}
+  // Site mode auto: cabut route + DNS-nya dari Cloudflare (best-effort).
+  const delSite = siteById(id);
+  if (delSite && delSite.tunnel && delSite.tunnel.mode === 'auto' && delSite.tunnel.hostname) {
+    try { await cfUnpublishSiteDomain(delSite); } catch (e) { console.log('CF unpublish on delete failed: ' + e.message); }
+  }
   const rec = running.get(id);
   if (rec) {
     try { rec.child.kill(); } catch { /* ignore */ }
@@ -2332,6 +2337,214 @@ async function apiPmaConfig(req, res) {
 }
 
 
+// ================= Cloudflare API: domain otomatis =================
+// Mode tunnel per-site keempat (selain quick/token): 'auto'. Sekali
+// konfigurasi API disimpan di Settings, tiap site cukup ketik subdomain —
+// panel yang membuat/memperbarui route + DNS CNAME di Cloudflare lewat
+// API v4, lalu menjalankan SATU tunnel bersama bernama `tunnelName`
+// (default "terwo") untuk semua site mode auto. Satu tunnel, banyak
+// hostname: ingress di CF di-merge (rule hostname lain dipertahankan,
+// catch-all selalu terakhir), bukan ditimpa buta.
+// Kredensial disimpan di cloudflare.json (0600) dan TIDAK PERNAH
+// dikembalikan lewat API (hanya flag hasApiToken/hasTunnelToken).
+// Env CF_API_BASE_URL hanya untuk pengujian (server CF API palsu lokal);
+// default-nya api.cloudflare.com resmi.
+const CF_FILE = path.join(DATA_DIR, 'cloudflare.json');
+function loadCfCfg() {
+  try {
+    const c = JSON.parse(fs.readFileSync(CF_FILE, 'utf8'));
+    return { apiToken: String(c.apiToken || ''), accountId: String(c.accountId || ''),
+      zoneId: String(c.zoneId || ''), domain: String(c.domain || ''),
+      tunnelId: String(c.tunnelId || ''), tunnelToken: String(c.tunnelToken || ''),
+      tunnelName: String(c.tunnelName || 'terwo') };
+  } catch { return { apiToken: '', accountId: '', zoneId: '', domain: '', tunnelId: '', tunnelToken: '', tunnelName: 'terwo' }; }
+}
+function saveCfCfg() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(CF_FILE, JSON.stringify(cfCfg, null, 2), { mode: 0o600 });
+}
+let cfCfg = loadCfCfg();
+function cfPublic() {
+  return { configured: !!(cfCfg.apiToken && cfCfg.accountId && cfCfg.zoneId && cfCfg.domain),
+    hasApiToken: !!cfCfg.apiToken, accountId: cfCfg.accountId, zoneId: cfCfg.zoneId,
+    domain: cfCfg.domain, tunnelName: cfCfg.tunnelName || 'terwo', tunnelId: cfCfg.tunnelId,
+    hasTunnelToken: !!cfCfg.tunnelToken, tunnelReady: !!(cfCfg.tunnelId && cfCfg.tunnelToken) };
+}
+function cfApi(method, p, body) {
+  return new Promise((resolve, reject) => {
+    const base = new URL((process.env.CF_API_BASE_URL || 'https://api.cloudflare.com/client/v4').replace(/\/+$/, ''));
+    const lib = base.protocol === 'http:' ? require('http') : require('https');
+    const data = body ? JSON.stringify(body) : null;
+    const req = lib.request({ hostname: base.hostname, port: base.port || (base.protocol === 'http:' ? 80 : 443),
+      path: (base.pathname.replace(/\/+$/, '') || '') + p, method,
+      headers: Object.assign({ Authorization: 'Bearer ' + cfCfg.apiToken, 'Content-Type': 'application/json' },
+        data ? { 'Content-Length': Buffer.byteLength(data) } : {}) }, (res) => {
+      let raw = '';
+      res.on('data', (d) => { raw += d; });
+      res.on('end', () => {
+        let j;
+        try { j = JSON.parse(raw); } catch { return reject(new Error('Cloudflare API: respons bukan JSON (HTTP ' + res.statusCode + ')')); }
+        if (res.statusCode >= 400 || j.success === false) {
+          const msgs = Array.isArray(j.errors) && j.errors.length ? j.errors.map((e) => e.message).join('; ') : ('HTTP ' + res.statusCode);
+          return reject(new Error('Cloudflare API (' + msgs + ') (HTTP ' + res.statusCode + ')'));
+        }
+        resolve(j.result);
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(20000, () => req.destroy(new Error('Cloudflare API: timeout 20 detik')));
+    if (data) req.write(data);
+    req.end();
+  });
+}
+function cfNormalizeHostname(input, domain) {
+  let h = String(input || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0].replace(/\.$/, '');
+  if (!h) throw new Error('Subdomain wajib diisi untuk mode Domain Otomatis (mis. app2, atau app2.' + domain + ')');
+  if (!h.includes('.')) h = h + '.' + domain;
+  return h;
+}
+function cfValidateHostname(h, domain) {
+  if (h === domain) throw new Error('Domain utama (' + domain + ') tidak boleh dipakai mode Domain Otomatis — pakai subdomain (mis. app2.' + domain + ')');
+  if (!h.endsWith('.' + domain)) throw new Error('Hostname ' + h + ' bukan subdomain dari ' + domain);
+  if (h.length > 253) throw new Error('Hostname terlalu panjang');
+  for (const label of h.split('.')) {
+    if (!label || label.length > 63 || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(label)) throw new Error('Hostname tidak valid: ' + h);
+  }
+}
+async function cfEnsureTunnel() {
+  if (!cfCfg.apiToken || !cfCfg.accountId) throw new Error('Konfigurasi Cloudflare belum lengkap — isi API token + Account ID di Settings dulu');
+  if (cfCfg.tunnelId) {
+    try { await cfApi('GET', '/accounts/' + cfCfg.accountId + '/cfd_tunnel/' + cfCfg.tunnelId); }
+    catch (e) {
+      if (!/\(HTTP 404\)/.test(e.message)) throw e;
+      cfCfg.tunnelId = ''; cfCfg.tunnelToken = ''; saveCfCfg();
+    }
+  }
+  if (!cfCfg.tunnelId) {
+    const created = await cfApi('POST', '/accounts/' + cfCfg.accountId + '/cfd_tunnel',
+      { name: cfCfg.tunnelName || 'terwo', config_src: 'cloudflare' });
+    if (!created || !created.id) throw new Error('Cloudflare tidak mengembalikan tunnel ID saat membuat tunnel');
+    cfCfg.tunnelId = created.id; saveCfCfg();
+  }
+  if (!cfCfg.tunnelToken) {
+    const tok = await cfApi('GET', '/accounts/' + cfCfg.accountId + '/cfd_tunnel/' + cfCfg.tunnelId + '/token');
+    if (!tok || typeof tok !== 'string') throw new Error('Cloudflare tidak mengembalikan token tunnel');
+    cfCfg.tunnelToken = tok; saveCfCfg();
+  }
+  return cfCfg;
+}
+async function cfGetIngress() {
+  try {
+    const r = await cfApi('GET', '/accounts/' + cfCfg.accountId + '/cfd_tunnel/' + cfCfg.tunnelId + '/configurations');
+    const cfg = (r && r.config) ? r.config : (r || {});
+    return { config: cfg, ingress: Array.isArray(cfg.ingress) ? cfg.ingress.slice() : [] };
+  } catch (e) {
+    if (/\(HTTP 404\)/.test(e.message)) return { config: {}, ingress: [] };
+    throw e;
+  }
+}
+async function cfPutIngress(ingress, baseConfig) {
+  await cfApi('PUT', '/accounts/' + cfCfg.accountId + '/cfd_tunnel/' + cfCfg.tunnelId + '/configurations',
+    { config: Object.assign({}, baseConfig || {}, { ingress }) });
+}
+async function cfUpsertDns(hostname) {
+  const target = cfCfg.tunnelId + '.cfargotunnel.com';
+  const list = await cfApi('GET', '/zones/' + cfCfg.zoneId + '/dns_records?type=CNAME&name=' + encodeURIComponent(hostname));
+  const arr = Array.isArray(list) ? list : [];
+  if (arr.length) {
+    const rec = arr[0];
+    if (rec.content === target && rec.proxied) return;
+    await cfApi('PUT', '/zones/' + cfCfg.zoneId + '/dns_records/' + rec.id,
+      { type: 'CNAME', name: hostname, content: target, proxied: true, ttl: 1 });
+  } else {
+    await cfApi('POST', '/zones/' + cfCfg.zoneId + '/dns_records',
+      { type: 'CNAME', name: hostname, content: target, proxied: true, ttl: 1 });
+  }
+}
+async function cfPublishSiteDomain(site, hostnameInput) {
+  if (!cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId || !cfCfg.domain) {
+    throw new Error('Konfigurasi Cloudflare belum lengkap — isi API token, Account ID, Zone ID, dan domain di Settings dulu');
+  }
+  const hostname = cfNormalizeHostname(hostnameInput, cfCfg.domain);
+  cfValidateHostname(hostname, cfCfg.domain);
+  const clash = sites.find((s) => s.id !== site.id && s.tunnel && s.tunnel.hostname === hostname);
+  if (clash) throw new Error('Hostname ' + hostname + ' sudah dipakai site lain (' + clash.name + ')');
+  await cfEnsureTunnel();
+  const { config, ingress } = await cfGetIngress();
+  const orig = ingress.slice();
+  const catchAll = ingress.find((r) => !r.hostname) || { service: 'http_status:404' };
+  const rules = ingress.filter((r) => r.hostname && r.hostname !== hostname);
+  rules.push({ hostname, service: 'http://127.0.0.1:' + site.port });
+  rules.push(catchAll);
+  await cfPutIngress(rules, config);
+  try { await cfUpsertDns(hostname); }
+  catch (e) {
+    try { await cfPutIngress(orig.length ? orig : [{ service: 'http_status:404' }], config); } catch {}
+    throw new Error('DNS Cloudflare gagal (' + e.message + ') — route dibatalkan');
+  }
+  return hostname;
+}
+async function cfUnpublishSiteDomain(site) {
+  const hostname = site.tunnel && site.tunnel.hostname;
+  if (!hostname || !cfCfg.tunnelId || !cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId) return;
+  try {
+    const { config, ingress } = await cfGetIngress();
+    const kept = ingress.filter((r) => r.hostname !== hostname);
+    if (!kept.some((r) => !r.hostname)) kept.push({ service: 'http_status:404' });
+    await cfPutIngress(kept, config);
+  } catch (e) { console.log('CF unpublish route failed (' + site.name + '): ' + e.message); }
+  try {
+    const list = await cfApi('GET', '/zones/' + cfCfg.zoneId + '/dns_records?type=CNAME&name=' + encodeURIComponent(hostname));
+    for (const rec of (Array.isArray(list) ? list : [])) {
+      try { await cfApi('DELETE', '/zones/' + cfCfg.zoneId + '/dns_records/' + rec.id); } catch {}
+    }
+  } catch (e) { console.log('CF unpublish DNS failed (' + site.name + '): ' + e.message); }
+}
+function apiCfGet(res) { sendJson(res, 200, Object.assign({ ok: true }, cfPublic())); }
+async function apiCfConfig(req, res) {
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const apiToken = (b.apiToken || '').trim() || cfCfg.apiToken;
+  const accountId = (b.accountId || '').trim() || cfCfg.accountId;
+  const zoneId = (b.zoneId || '').trim() || cfCfg.zoneId;
+  let domain = String(b.domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0].replace(/\.$/, '') || cfCfg.domain;
+  const tunnelName = (b.tunnelName || '').trim() || cfCfg.tunnelName || 'terwo';
+  if (apiToken && !/^[A-Za-z0-9._-]+$/.test(apiToken)) throw new Error('API token Cloudflare tidak valid');
+  if (accountId && !/^[0-9a-f]{32}$/i.test(accountId)) throw new Error('Account ID harus 32 karakter hex (lihat dashboard Cloudflare, kolom Account ID)');
+  if (zoneId && !/^[0-9a-f]{32}$/i.test(zoneId)) throw new Error('Zone ID harus 32 karakter hex (dashboard domain → Overview, kanan bawah)');
+  if (domain && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) throw new Error('Domain tidak valid (mis. flaznexa.cloud)');
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(tunnelName)) throw new Error('Nama tunnel tidak valid');
+  // Tunnel milik akun lama tidak berlaku bila akun diganti.
+  if (accountId !== cfCfg.accountId) { cfCfg.tunnelId = ''; cfCfg.tunnelToken = ''; }
+  cfCfg.apiToken = apiToken; cfCfg.accountId = accountId; cfCfg.zoneId = zoneId;
+  cfCfg.domain = domain; cfCfg.tunnelName = tunnelName;
+  saveCfCfg();
+  sendJson(res, 200, Object.assign({ ok: true }, cfPublic()));
+}
+async function apiCfSetup(req, res) {
+  if (!cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId || !cfCfg.domain) {
+    throw new Error('Lengkapi dulu API token, Account ID, Zone ID, dan domain di Settings, lalu Simpan');
+  }
+  const v = await cfApi('GET', '/user/tokens/verify');
+  if (v && v.status && v.status !== 'active') throw new Error('API token Cloudflare tidak aktif (status: ' + v.status + ')');
+  const z = await cfApi('GET', '/zones/' + cfCfg.zoneId);
+  if (z && z.name && z.name.toLowerCase() !== cfCfg.domain) {
+    throw new Error('Zone ID ini milik domain ' + z.name + ', bukan ' + cfCfg.domain + ' — periksa Zone ID/domain');
+  }
+  await cfEnsureTunnel();
+  sendJson(res, 200, Object.assign({ ok: true, verified: true, zoneName: z && z.name ? z.name : cfCfg.domain }, cfPublic()));
+}
+async function apiCfRemoveDomain(req, res, id) {
+  const site = siteById(id);
+  if (!site) throw new Error('Website not found');
+  if (site.tunnel && site.tunnel.mode === 'auto' && site.tunnel.hostname) {
+    await cfUnpublishSiteDomain(site);
+  }
+  stopSiteTunnel(id, true);
+  site.tunnel = { enabled: false, mode: 'auto', hostname: '', token: '' };
+  saveSites();
+  sendJson(res, 200, { ok: true, tunnel: siteTunnelPublic(site) });
+}
+
 // ================= Cloudflare Tunnel per website =================
 // Satu site = satu proses cloudflared sendiri, jadi tiap website punya URL
 // publiknya masing-masing (Quick: *.trycloudflare.com acak; Named: token CF).
@@ -2357,7 +2570,7 @@ function siteTunnelPublic(site) {
   const r = siteTunnels.get(site.id);
   const t = site.tunnel || {};
   return { enabled: !!t.enabled, mode: t.mode || 'quick', hostname: t.hostname || '',
-    hasToken: !!t.token, running: !!r, url: r ? r.url : '', startedAt: r ? r.startedAt : 0 };
+    hasToken: t.mode === 'auto' ? !!cfCfg.tunnelToken : !!t.token, running: !!r, url: r ? r.url : '', startedAt: r ? r.startedAt : 0 };
 }
 function siteTunnelPushLog(id, line) {
   const r = siteTunnels.get(id);
@@ -2371,7 +2584,12 @@ async function startSiteTunnel(site) {
   if (siteTunnels.has(site.id)) return siteTunnelPublic(site);
   await mustBin('cloudflared', 'cloudflared is not installed. Install it first via the Store menu.');
   let args;
-  if (cfg.mode === 'token') {
+  if (cfg.mode === 'auto') {
+    const token = String(cfCfg.tunnelToken || '').trim();
+    if (!cfg.hostname) throw new Error('Hostname Domain Otomatis belum diisi');
+    if (!token) throw new Error('Tunnel otomatis belum siap — simpan konfigurasi Cloudflare di Settings, lalu Setup & Uji, kemudian aktifkan lagi tunnel site ini');
+    args = ['tunnel', '--no-autoupdate', 'run', '--token', token];
+  } else if (cfg.mode === 'token') {
     const token = String(cfg.token || '').trim();
     if (!token || !/^[A-Za-z0-9._-]+$/.test(token)) {
       throw new Error('Token Cloudflare wajib diisi (tempel token tunnel dari dashboard Cloudflare Zero Trust)');
@@ -2440,7 +2658,7 @@ async function apiSiteTunnelStart(req, res, id) {
   const site = siteById(id);
   if (!site) throw new Error('Website not found');
   const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
-  const mode = b.mode === 'token' ? 'token' : 'quick';
+  const mode = b.mode === 'token' ? 'token' : (b.mode === 'auto' ? 'auto' : 'quick');
   const token = (b.token || '').trim() || (site.tunnel ? site.tunnel.token : '');
   // Validasi di sini juga (bukan hanya saat proses tunnel nyala), supaya
   // mode token tanpa token ditolak langsung saat diaktifkan — termasuk
@@ -2448,8 +2666,13 @@ async function apiSiteTunnelStart(req, res, id) {
   if (mode === 'token' && (!token || !/^[A-Za-z0-9._-]+$/.test(token))) {
     throw new Error('Token Cloudflare wajib diisi (tempel token tunnel dari dashboard Cloudflare Zero Trust)');
   }
-  site.tunnel = { enabled: true, mode, token: token || '',
-    hostname: (b.hostname || '').trim() || (site.tunnel ? site.tunnel.hostname : '') };
+  // Mode auto: publikasikan dulu ke Cloudflare SEBELUM enabled disimpan,
+  // supaya gagal API tidak meninggalkan site dalam keadaan "armed" palsu.
+  // Route + DNS sengaja TIDAK dihapus saat Stay Local/stop — pencabutan
+  // eksplisit lewat tombol Hapus Domain / hapus site (lihat apiCfRemoveDomain).
+  let hostname = (b.hostname || '').trim() || (site.tunnel ? site.tunnel.hostname : '');
+  if (mode === 'auto') hostname = await cfPublishSiteDomain(site, hostname);
+  site.tunnel = { enabled: true, mode, token: mode === 'auto' ? '' : (token || ''), hostname };
   saveSites();
   // Site belum jalan: tunnel dicatat enabled, tapi prosesnya baru nyala
   // saat site di-Start (tunnel ke upstream yang mati hanya akan 502).
@@ -2567,6 +2790,11 @@ async function handleRequest(req, res) {
     }
     const stl = p.match(/^\/api\/sites\/([0-9a-f]{16})\/tunnel\/logs$/);
     if (stl && req.method === 'GET') return apiSiteTunnelLogs(res, stl[1]);
+    const cfd = p.match(/^\/api\/sites\/([0-9a-f]{16})\/tunnel\/remove-domain$/);
+    if (cfd && req.method === 'POST') return apiCfRemoveDomain(req, res, cfd[1]);
+    if (p === '/api/cloudflare' && req.method === 'GET') return apiCfGet(res);
+    if (p === '/api/cloudflare/config' && req.method === 'POST') return apiCfConfig(req, res);
+    if (p === '/api/cloudflare/setup' && req.method === 'POST') return apiCfSetup(req, res);
     if (p === '/api/tunnels' && req.method === 'GET') return apiTunnelsList(res);
     const sm = p.match(/^\/api\/sites\/([0-9a-f]{16})\/(start|stop|restart|delete|logs)$/);
     if (sm) {

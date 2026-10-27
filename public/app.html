@@ -125,7 +125,7 @@
     </table>
     </div>
     <p class="hint">Node.js: runs <code>node &lt;file&gt;</code> with the <code>PORT</code> env auto-filled. PHP: needs <code>pkg install php</code>, served via <code>php -S 127.0.0.1:PORT</code>. Static: needs python, serves a folder via <code>python3 -m http.server</code>. Go: needs Go, runs <code>go run .</code> in the project folder with the <code>PORT</code> env auto-filled.</p>
-    <p class="hint">Akses per website: <b>Stay Local</b> = hanya bisa dibuka dari HP/Termux (localhost), <b>Tunneling</b> = dapat URL publik Cloudflare (Quick tanpa akun, atau Named pakai token). Klik <b>Atur</b> di kolom Akses untuk memilih mode Quick/Named dan token.</p>
+    <p class="hint">Akses per website: <b>Stay Local</b> = hanya bisa dibuka dari HP/Termux (localhost), <b>Tunneling</b> = dapat URL publik Cloudflare (Quick tanpa akun, Named pakai token, atau Domain Otomatis pakai API Cloudflare). Klik <b>Atur</b> di kolom Akses untuk memilih mode.</p>
     <h3 class="mb-3 mt-7 flex items-center gap-2 text-[15px] font-semibold"><i data-lucide="repeat" class="h-[18px] w-[18px] text-accent-h"></i>Reverse Proxy (Nginx)</h3>
     <div class="card">
       <div class="frow">
@@ -378,6 +378,26 @@
       <pre id="tun-log" class="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[12.5px] text-muted">—</pre>
     </div>
     <div class="card mb-4">
+      <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="globe" class="h-4 w-4 text-accent-h"></i>Domain Otomatis (Cloudflare API)</h4>
+      <p class="hint mb-3">Sekali diisi, tiap website mode <b>Domain Otomatis</b> cukup ketik subdomain — Terwo yang membuat route + DNS CNAME-nya di Cloudflare, tanpa buka dashboard. Satu tunnel bersama (<span id="cf-tunnel-note">terwo</span>) dipakai semua site mode ini.</p>
+      <div class="frow">
+        <label class="lbl">API Token Cloudflare<input id="cf-token" class="inp font-mono" type="password" placeholder="Tempel API token… (kosong = pakai tersimpan)"></label>
+        <label class="lbl">Account ID<input id="cf-account" class="inp font-mono" placeholder="32 karakter hex"></label>
+      </div>
+      <div class="frow">
+        <label class="lbl">Zone ID<input id="cf-zone" class="inp font-mono" placeholder="32 karakter hex (domain → Overview)"></label>
+        <label class="lbl">Domain<input id="cf-domain" class="inp" placeholder="e.g. flaznexa.cloud"></label>
+        <label class="lbl">Nama tunnel<input id="cf-tunnel" class="inp" placeholder="terwo"></label>
+      </div>
+      <div class="frow">
+        <span id="cf-status" class="muted text-sm">checking…</span>
+        <button id="cf-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Simpan</button>
+        <button id="cf-setup" class="btn-ghost btn-sm"><i data-lucide="rocket" class="h-4 w-4"></i>Setup &amp; Uji</button>
+        <span id="cf-err" class="err"></span>
+      </div>
+      <p class="hint">Buat token di dash.cloudflare.com → My Profile → API Tokens → Create Custom Token, permission: <b>Account → Cloudflare Tunnel → Edit</b> dan <b>Zone → DNS → Edit</b>, dibatasi ke akun + zone domain itu saja. Jangan pakai Global API Key. Token disimpan di panel (0600) dan tidak pernah ditampilkan lagi.</p>
+    </div>
+    <div class="card mb-4">
       <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="user" class="h-4 w-4 text-accent-h"></i>Account</h4>
       <p class="mb-3 text-sm">Active username: <b id="set-uname">…</b></p>
       <div class="frow">
@@ -514,15 +534,18 @@
         <select id="stun-mode" class="inp">
           <option value="quick">Quick Tunnel (tanpa akun, URL acak *.trycloudflare.com)</option>
           <option value="token">Named Tunnel (hostname tetap, pakai token Cloudflare)</option>
+          <option value="auto">Domain Otomatis (Cloudflare API)</option>
         </select>
       </label>
       <div id="stun-token-row">
         <label class="lbl">Tunnel token (Cloudflare Zero Trust)<input id="stun-token" class="inp font-mono" type="password" placeholder="Tempel token tunnel… (kosong = pakai token tersimpan)"></label>
-        <label class="lbl">Hostname (opsional, untuk tampilan)<input id="stun-host" class="inp" placeholder="e.g. blog.example.com"></label>
       </div>
+      <label class="lbl">Hostname<input id="stun-host" class="inp" placeholder="Quick/Named: opsional, untuk tampilan — Auto: subdomain, mis. app2 (atau app2.domainmu)"></label>
+      <div id="stun-auto-row" class="hint" style="display:none">Mode ini memakai konfigurasi Cloudflare di Settings: Terwo membuat route tunnel + DNS CNAME otomatis untuk hostname di atas. Route &amp; DNS <b>tidak</b> dihapus saat Stay Local — pakai <b>Hapus Domain</b> bila benar-benar ingin mencabutnya dari Cloudflare.</div>
       <p class="hint">Tunnel hanya jalan saat websitenya jalan. Kalau website belum jalan, tunnel dicatat aktif dan otomatis nyala saat website di-Start.</p>
     </div>
     <div class="mt-4 flex justify-end gap-2">
+      <button id="stun-remove-domain" class="btn-ghost btn-sm" style="display:none"><i data-lucide="trash-2" class="h-4 w-4"></i>Hapus Domain</button>
       <button id="stun-stop" class="btn-ghost btn-sm"><i data-lucide="square" class="h-4 w-4"></i>Stay Local</button>
       <button id="stun-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Start Tunnel</button>
     </div>

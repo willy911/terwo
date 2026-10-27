@@ -85,7 +85,7 @@ function showTab(id, push) {
   if (id === 'cron') loadCron();
   if (id === 'term') termTabOpen();
   if (id === 'backup') loadBackups();
-  if (id === 'settings') { loadSettings(); loadTunnel(); startTunnelPoll(); } else stopTunnelPoll();
+  if (id === 'settings') { tunModeSynced = false; loadSettings(); loadTunnel(); loadCf(); startTunnelPoll(); } else stopTunnelPoll();
   if (push) history.pushState({ tab: id }, '', '/' + TAB_SLUGS[id]);
   refreshIcons();
 }
@@ -561,7 +561,7 @@ async function loadSites() {
       const atur = document.createElement('button');
       atur.className = 'btn-ghost btn-sm';
       atur.textContent = 'Atur';
-      atur.title = 'Atur mode Quick/Named + token tunnel';
+      atur.title = 'Atur mode Quick/Named/Domain Otomatis';
       atur.addEventListener('click', (ev) => { ev.stopPropagation(); openSiteTunnelModal(s); });
       seg.appendChild(atur);
       akses.appendChild(seg);
@@ -570,6 +570,16 @@ async function loadSites() {
         a.className = 'mt-1 block font-mono text-[12.5px] text-accent-h underline';
         a.target = '_blank'; a.rel = 'noopener'; a.href = tun.url; a.textContent = tun.url;
         akses.appendChild(a);
+      } else if (tun.mode === 'auto' && tun.hostname) {
+        const a = document.createElement('a');
+        a.className = 'mt-1 block font-mono text-[12.5px] text-accent-h underline';
+        a.target = '_blank'; a.rel = 'noopener'; a.href = 'https://' + tun.hostname; a.textContent = 'https://' + tun.hostname;
+        akses.appendChild(a);
+        if (tunState === 'armed') {
+          const sp = document.createElement('span');
+          sp.className = 'muted text-sm'; sp.textContent = ' (aktif saat website jalan)';
+          akses.appendChild(sp);
+        }
       } else if (tunState === 'starting') {
         const sp = document.createElement('span');
         sp.className = 'muted text-sm'; sp.textContent = 'Tunnel starting…';
@@ -644,6 +654,8 @@ function openSiteTunnelModal(s) {
   const tun = s.tunnel || {};
   document.getElementById('stun-mode').value = tun.mode || 'quick';
   document.getElementById('stun-token-row').style.display = ((tun.mode || 'quick') === 'token') ? '' : 'none';
+  document.getElementById('stun-auto-row').style.display = ((tun.mode || 'quick') === 'auto') ? '' : 'none';
+  document.getElementById('stun-remove-domain').style.display = (tun.mode === 'auto' && tun.hostname) ? '' : 'none';
   document.getElementById('stun-token').value = '';
   document.getElementById('stun-host').value = tun.hostname || '';
   document.getElementById('stun-err').textContent = '';
@@ -655,6 +667,13 @@ document.getElementById('stun-close').addEventListener('click', closeSiteTunnelM
 stunModal.addEventListener('click', (e) => { if (e.target === stunModal) closeSiteTunnelModal(); });
 document.getElementById('stun-mode').addEventListener('change', (e) => {
   document.getElementById('stun-token-row').style.display = (e.target.value === 'token') ? '' : 'none';
+  document.getElementById('stun-auto-row').style.display = (e.target.value === 'auto') ? '' : 'none';
+});
+document.getElementById('stun-remove-domain').addEventListener('click', async () => {
+  if (!curTunnelSite) return;
+  if (!confirm('Cabut domain ' + (curTunnelSite.tunnel && curTunnelSite.tunnel.hostname ? curTunnelSite.tunnel.hostname : '') + ' dari Cloudflare (route + DNS dihapus)? Tunnel site ini ikut dimatikan.')) return;
+  await api('/api/sites/' + curTunnelSite.id + '/tunnel/remove-domain', { method: 'POST' }).catch(() => {});
+  closeSiteTunnelModal(); loadSites();
 });
 document.getElementById('stun-save').addEventListener('click', async () => {
   if (!curTunnelSite) return;
@@ -1353,8 +1372,53 @@ document.getElementById('cj-add').addEventListener('click', async () => {
   else err.textContent = j.error || 'Failed';
 });
 
+// ---------- Cloudflare API: domain otomatis ----------
+async function loadCf() {
+  try {
+    const j = await (await api('/api/cloudflare')).json();
+    document.getElementById('cf-account').value = j.accountId || '';
+    document.getElementById('cf-zone').value = j.zoneId || '';
+    document.getElementById('cf-domain').value = j.domain || '';
+    document.getElementById('cf-tunnel').value = j.tunnelName || 'terwo';
+    document.getElementById('cf-tunnel-note').textContent = j.tunnelName || 'terwo';
+    document.getElementById('cf-token').value = '';
+    document.getElementById('cf-status').textContent = !j.configured ? 'Belum dikonfigurasi'
+      : (j.tunnelReady ? ('Siap — tunnel ' + (j.tunnelId || '') + ' sudah dibuat') : 'Tersimpan — klik Setup & Uji untuk membuat tunnel');
+  } catch { /* ignore */ }
+}
+document.getElementById('cf-save').addEventListener('click', async () => {
+  const err = document.getElementById('cf-err'); err.textContent = '';
+  const r = await api('/api/cloudflare/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiToken: document.getElementById('cf-token').value.trim(),
+      accountId: document.getElementById('cf-account').value.trim(),
+      zoneId: document.getElementById('cf-zone').value.trim(),
+      domain: document.getElementById('cf-domain').value.trim(),
+      tunnelName: document.getElementById('cf-tunnel').value.trim() }),
+  });
+  const j = await r.json();
+  if (j.ok) loadCf(); else err.textContent = j.error || 'Failed';
+});
+document.getElementById('cf-setup').addEventListener('click', async () => {
+  const err = document.getElementById('cf-err'); err.textContent = '';
+  document.getElementById('cf-status').textContent = 'Menghubungi Cloudflare…';
+  const r = await api('/api/cloudflare/setup', { method: 'POST' });
+  const j = await r.json();
+  if (j.ok) loadCf(); else { err.textContent = j.error || 'Failed'; loadCf(); }
+});
+
 // ---------- tunnel (Cloudflare auto tunneling) ----------
+// BUGFIX (v1.20.0): loadTunnel dipanggil tiap 5 detik selama tab Settings
+// dibuka, dan dulu ia SELALU menimpa dropdown mode + baris token dengan
+// mode server. Akibatnya pilihan "Named Tunnel" yang baru dipilih user
+// kembali jadi Quick dan baris token menghilang sendiri dalam <5 detik —
+// persis keluhan "form langsung close". Sekarang mode/baris token hanya
+// disinkronkan saat pertama kali tab dibuka, atau saat mode server
+// benar-benar berubah (mis. setelah saklar Start/Stop berhasil). Pilihan
+// lokal user di antara dua poll tidak lagi ditimpa.
 let tunnelTimer = null;
+let tunModeSynced = false;
+let tunLastServerMode = null;
 function startTunnelPoll() { stopTunnelPoll(); tunnelTimer = setInterval(loadTunnel, 5000); }
 function stopTunnelPoll() { if (tunnelTimer) { clearInterval(tunnelTimer); tunnelTimer = null; } }
 async function loadTunnel() {
@@ -1362,9 +1426,16 @@ async function loadTunnel() {
     const j = await (await api('/api/tunnel')).json();
     const sw = document.getElementById('tun-switch');
     sw.checked = !!(j.running || j.enabled);
-    document.getElementById('tun-mode').value = j.mode || 'quick';
-    document.getElementById('tun-token-row').style.display = (j.mode === 'token') ? '' : 'none';
-    if (j.hostname) document.getElementById('tun-host').value = j.hostname;
+    const serverMode = j.mode || 'quick';
+    if (!tunModeSynced || serverMode !== tunLastServerMode) {
+      document.getElementById('tun-mode').value = serverMode;
+      document.getElementById('tun-token-row').style.display = (serverMode === 'token') ? '' : 'none';
+      tunModeSynced = true;
+    }
+    tunLastServerMode = serverMode;
+    // Hostname juga jangan ditimpa saat user sedang mengetik di field itu.
+    const hostEl = document.getElementById('tun-host');
+    if (j.hostname && document.activeElement !== hostEl) hostEl.value = j.hostname;
     if (j.targetPort) document.getElementById('tun-port').placeholder = 'panel ini (' + j.targetPort + ')';
     const st = document.getElementById('tun-status');
     st.innerHTML = j.running ? (j.url ? badgeOk('Tunnel aktif') : badgeWarn('Tunnel starting…')) : badgeOff('Tunnel mati');
@@ -1378,6 +1449,7 @@ async function loadTunnel() {
 }
 document.getElementById('tun-mode').addEventListener('change', (e) => {
   document.getElementById('tun-token-row').style.display = (e.target.value === 'token') ? '' : 'none';
+  tunModeSynced = true; // pilihan lokal ini yang berlaku sampai mode server berubah
 });
 document.getElementById('tun-switch').addEventListener('change', async (e) => {
   const err = document.getElementById('tun-err');
