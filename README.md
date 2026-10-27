@@ -1,4 +1,4 @@
-# Terwo v1.20.2
+# Terwo v1.20.3
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -183,6 +183,7 @@ PANEL_PORT=9000 node panel.js
 - **Bugfix Settings → Tunnel Panel (v1.20.0)** — dulu `loadTunnel` yang dipoll tiap 5 detik selalu menimpa dropdown Mode + baris token dengan mode server, sehingga pilihan Named Tunnel yang baru dipilih kembali jadi Quick dan baris token menghilang sendiri dalam <5 detik. Sekarang mode/baris token hanya disinkronkan saat tab Settings dibuka atau saat mode server benar-benar berubah; field Hostname juga tidak ditimpa saat sedang diketik.
 - **Menu Tunnel sendiri (v1.20.1)** — kartu Tunnel Panel dipindah dari Settings ke menu **Tunnel** sendiri (sidebar + mobile, slug `/tunnel`, poll status hanya jalan saat tab Tunnel dibuka). Settings kini hanya berisi Account, Domain Otomatis, Telegram, dan Panel. Tunnel per website TIDAK berubah: tetap di menu Website, kolom Akses + modal Atur.
 - **Bugfix kolom Akses website (v1.20.2)** — tunnel Named (token) tidak pernah mencetak URL `trycloudflare` di log cloudflared, jadi `url` selalu kosong dan baris website macet di "Tunnel starting…" walau tunnel sudah tersambung. Sekarang kolom Akses menampilkan link `https://<hostname>` untuk mode Named maupun Domain Otomatis; bila hostname kosong, labelnya jujur: proses Named jalan, domain diatur di dashboard Cloudflare.
+- **Error Setup & Uji yang jelas (v1.20.3)** — dulu Setup & Uji hanya menampilkan pesan mentah Cloudflare ("Authentication error", HTTP 403) tanpa menyebut langkah mana yang gagal. Sekarang tiap langkah dilabeli (1/3 verifikasi token, 2/3 cek zone, 3/3 buat/cek tunnel) beserta hint untuk 403, dan kode error Cloudflare ikut ditampilkan bila ada.
 
 The **🌐 Website** tab has four sub-tabs:
 

@@ -2386,7 +2386,8 @@ function cfApi(method, p, body) {
         try { j = JSON.parse(raw); } catch { return reject(new Error('Cloudflare API: respons bukan JSON (HTTP ' + res.statusCode + ')')); }
         if (res.statusCode >= 400 || j.success === false) {
           const msgs = Array.isArray(j.errors) && j.errors.length ? j.errors.map((e) => e.message).join('; ') : ('HTTP ' + res.statusCode);
-          return reject(new Error('Cloudflare API (' + msgs + ') (HTTP ' + res.statusCode + ')'));
+          const codes = Array.isArray(j.errors) && j.errors.length ? j.errors.map((e) => e.code).filter((c) => c !== undefined).join(',') : '';
+          return reject(new Error('Cloudflare API (' + msgs + ')' + (codes ? ' [code ' + codes + ']' : '') + ' (HTTP ' + res.statusCode + ')'));
         }
         resolve(j.result);
       });
@@ -2520,17 +2521,30 @@ async function apiCfConfig(req, res) {
   saveCfCfg();
   sendJson(res, 200, Object.assign({ ok: true }, cfPublic()));
 }
+// Setup & Uji jalan 3 langkah berurutan; tiap langkah dibungkus dengan labelnya
+// sendiri, karena pesan mentah Cloudflare ("Authentication error", HTTP 403)
+// tidak memberi tahu langkah mana yang gagal — persis keluhan "error tanpa
+// log yang jelas". Hint hanya ditambahkan untuk 403, bukan untuk error lain.
+function cfStepErr(step, hint403, e) {
+  const m = e && e.message ? e.message : String(e);
+  return new Error(step + ' gagal: ' + m + (/\(HTTP 403\)/.test(m) ? ' — ' + hint403 : ''));
+}
 async function apiCfSetup(req, res) {
   if (!cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId || !cfCfg.domain) {
     throw new Error('Lengkapi dulu API token, Account ID, Zone ID, dan domain di Settings, lalu Simpan');
   }
-  const v = await cfApi('GET', '/user/tokens/verify');
+  let v;
+  try { v = await cfApi('GET', '/user/tokens/verify'); }
+  catch (e) { throw cfStepErr('Langkah 1/3 (verifikasi token)', 'Cloudflare menolak token ini: token tidak valid, kedaluwarsa, atau sudah dicabut. Buat token baru lalu tempel + Simpan lagi', e); }
   if (v && v.status && v.status !== 'active') throw new Error('API token Cloudflare tidak aktif (status: ' + v.status + ')');
-  const z = await cfApi('GET', '/zones/' + cfCfg.zoneId);
+  let z;
+  try { z = await cfApi('GET', '/zones/' + cfCfg.zoneId); }
+  catch (e) { throw cfStepErr('Langkah 2/3 (cek zone)', 'token tidak punya akses ke Zone ID ini (scope zone token beda dengan zone yang diisi) atau Zone ID salah', e); }
   if (z && z.name && z.name.toLowerCase() !== cfCfg.domain) {
     throw new Error('Zone ID ini milik domain ' + z.name + ', bukan ' + cfCfg.domain + ' — periksa Zone ID/domain');
   }
-  await cfEnsureTunnel();
+  try { await cfEnsureTunnel(); }
+  catch (e) { throw cfStepErr('Langkah 3/3 (buat/cek tunnel)', 'token butuh permission Account → Cloudflare Tunnel → Edit dan Account ID harus sesuai scope token', e); }
   sendJson(res, 200, Object.assign({ ok: true, verified: true, zoneName: z && z.name ? z.name : cfCfg.domain }, cfPublic()));
 }
 async function apiCfRemoveDomain(req, res, id) {
