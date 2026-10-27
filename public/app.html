@@ -184,7 +184,25 @@
         <button id="db-restore-open" class="btn-ghost btn-sm"><i data-lucide="upload" class="h-4 w-4"></i>Restore Backup</button>
       </div>
       <p id="db-msg" class="hint"></p>
+      <p class="hint">Open membuka database di phpMyAdmin (pasang &amp; jalankan dulu di kartu phpMyAdmin). Klik nama database untuk browser internal panel.</p>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Database</th><th>Tables</th><th>Size</th><th>Actions</th></tr></thead><tbody id="db-list"></tbody></table></div>
+    </div>
+    <div class="card mb-4 !p-4">
+      <div class="mb-2 flex flex-wrap items-center gap-2">
+        <h4 class="flex items-center gap-2 text-sm font-semibold"><i data-lucide="table-2" class="h-4 w-4 text-accent-h"></i>phpMyAdmin</h4>
+        <button id="pma-install" class="btn btn-sm"><i data-lucide="download" class="h-4 w-4"></i>Pasang</button>
+        <button id="pma-start" class="btn btn-sm"><i data-lucide="play" class="h-4 w-4"></i>Start</button>
+        <button id="pma-stop" class="btn-ghost btn-sm"><i data-lucide="square" class="h-4 w-4"></i>Stop</button>
+        <button id="pma-open" class="btn btn-sm"><i data-lucide="external-link" class="h-4 w-4"></i>Buka phpMyAdmin</button>
+      </div>
+      <p id="pma-status" class="hint">Belum terpasang</p>
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <label class="lbl">Port<input id="pma-port" class="inp" type="number" value="8081"></label>
+        <label class="lbl-check"><input id="pma-autostart" type="checkbox" class="h-4 w-4 accent-accent">Auto-start saat panel jalan</label>
+        <button id="pma-save" class="btn-ghost btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Simpan</button>
+      </div>
+      <p class="hint">Login otomatis pakai kredensial MySQL yang tersimpan di panel. phpMyAdmin hanya di-bind ke 127.0.0.1 — tidak ikut tunnel panel, jadi bukanya dari perangkat yang sama.</p>
+      <p id="pma-msg" class="hint"></p>
     </div>
     <div class="card mb-4 !p-4">
       <div class="mb-2 flex flex-wrap items-center gap-2">
@@ -238,10 +256,11 @@
         <h4 class="flex items-center gap-2 text-sm font-semibold"><i data-lucide="message-square" class="h-4 w-4 text-accent-h"></i>Chat</h4>
         <span id="ai-chat-model" class="muted text-sm"></span>
         <label class="lbl-check"><input id="ai-agent-mode" type="checkbox" class="h-4 w-4 accent-accent">Mode Agent</label>
+        <button id="ai-always-allow-ind" class="btn-ghost btn-sm hidden" title="Klik untuk mematikan Always Allow">Always Allow: ON</button>
         <button id="ai-new" class="btn-ghost btn-sm"><i data-lucide="plus" class="h-4 w-4"></i>New Chat</button>
         <button id="ai-stop" class="btn-ghost btn-sm hidden"><i data-lucide="square" class="h-4 w-4"></i>Stop</button>
       </div>
-      <p class="hint">Mode Agent: AI boleh memanggil tool — baca file/direktori jalan otomatis, tulis file &amp; eksekusi perintah selalu minta Allow dulu. Tool hanya berlaku di dalam home user.</p>
+      <p class="hint">Mode Agent: AI boleh memanggil tool — baca file/direktori jalan otomatis, tulis file &amp; eksekusi perintah selalu minta Allow dulu (klik Always Allow di bubble approval supaya selanjutnya jalan otomatis sampai halaman di-reload). Tool hanya berlaku di dalam home user.</p>
       <div id="ai-messages" class="flex flex-col gap-2" style="max-height:55vh;overflow-y:auto"></div>
       <textarea id="ai-input" class="inp mt-3" rows="2" placeholder="Tulis pesan… (Enter = kirim, Shift+Enter = baris baru)"></textarea>
       <button id="ai-send" class="btn btn-sm mt-2"><i data-lucide="send" class="h-4 w-4"></i>Send</button>

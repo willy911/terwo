@@ -894,7 +894,7 @@ async function loadDbList() {
         b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
         act.appendChild(b);
       };
-      mkA('Open', () => loadDbTables(d.name));
+      mkA('Open', () => openPma(d.name));
       mkA('Backup', () => backupDb(d.name));
       mkA('Restore', () => openRestoreModal(d.name));
       mkA('Delete', () => delDb(d.name), true);
@@ -933,7 +933,74 @@ async function loadDbUsers() {
     if (!(jj.users || []).length) el.innerHTML = '<tr><td colspan="3" class="muted">Belum ada user</td></tr>';
   } catch { /* ignore */ }
 }
-function refreshDb() { loadDbList(); loadDbUsers(); }
+function refreshDb() { loadDbList(); loadDbUsers(); loadPma(); }
+let pmaState = null;
+async function loadPma() {
+  try {
+    const j = await (await api('/api/phpmyadmin')).json();
+    pmaState = j;
+    const st = document.getElementById('pma-status');
+    if (st) {
+      if (!j.installed) st.textContent = 'Belum terpasang — klik Pasang (unduh ±16 MB dari phpmyadmin.net, butuh PHP + unzip di Termux).';
+      else if (j.running) st.textContent = 'Berjalan di ' + j.url + (j.startedAt ? ' sejak ' + new Date(j.startedAt).toLocaleString() : '');
+      else st.textContent = 'Terpasang, sedang berhenti — klik Start untuk menyalakan.';
+    }
+    const portEl = document.getElementById('pma-port');
+    if (portEl) portEl.value = j.port;
+    const autoEl = document.getElementById('pma-autostart');
+    if (autoEl) autoEl.checked = !!j.autoStart;
+    const show = (id, v) => { const el = document.getElementById(id); if (el) el.style.display = v ? '' : 'none'; };
+    show('pma-install', !j.installed);
+    show('pma-start', j.installed && !j.running);
+    show('pma-stop', j.running);
+    show('pma-open', j.running);
+  } catch { /* ignore */ }
+}
+function pmaMsg(txt) { const el = document.getElementById('pma-msg'); if (el) el.textContent = txt || ''; }
+// Open ala aaPanel: selalu mengarah ke phpMyAdmin (bukan browser internal).
+// Browser internal tetap ada lewat klik NAMA database (loadDbTables).
+async function openPma(db) {
+  if (pmaState && pmaState.running) {
+    window.open(pmaState.url + '/index.php?db=' + encodeURIComponent(db), '_blank');
+    return;
+  }
+  if (pmaState && pmaState.installed) {
+    // Terpasang tapi berhenti: nyalakan dulu, lalu buka (php -S cepat nyala).
+    dbMsg('Menyalakan phpMyAdmin…');
+    await pmaAction('/api/phpmyadmin/start', null, '');
+    setTimeout(() => {
+      if (pmaState && pmaState.running) window.open(pmaState.url + '/index.php?db=' + encodeURIComponent(db), '_blank');
+      else dbMsg('phpMyAdmin gagal dinyalakan — cek kartu phpMyAdmin.');
+    }, 1000);
+    return;
+  }
+  dbMsg('phpMyAdmin belum terpasang — klik Pasang di kartu phpMyAdmin di bawah.');
+  const card = document.getElementById('pma-status');
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+async function pmaAction(path, body, busyText) {
+  pmaMsg(busyText || '');
+  try {
+    const jj = await (await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })).json();
+    if (!jj.ok) { pmaMsg(jj.error || 'Gagal'); return; }
+    if (jj.warnings && jj.warnings.length) pmaMsg('Peringatan: ' + jj.warnings.join(' '));
+    else pmaMsg('');
+    await loadPma();
+  } catch (e) { pmaMsg('Gagal: ' + e.message); }
+}
+document.getElementById('pma-install').addEventListener('click', () => {
+  const b = document.getElementById('pma-install');
+  b.disabled = true;
+  pmaAction('/api/phpmyadmin/install', null, 'Mengunduh & memasang phpMyAdmin, tunggu sebentar…').finally(() => { b.disabled = false; });
+});
+document.getElementById('pma-start').addEventListener('click', () => pmaAction('/api/phpmyadmin/start', null, 'Menyalakan phpMyAdmin…'));
+document.getElementById('pma-stop').addEventListener('click', () => pmaAction('/api/phpmyadmin/stop', null, 'Mematikan phpMyAdmin…'));
+document.getElementById('pma-open').addEventListener('click', () => { if (pmaState && pmaState.running) window.open(pmaState.url + '/index.php', '_blank'); });
+document.getElementById('pma-save').addEventListener('click', () => pmaAction('/api/phpmyadmin/config', {
+  port: parseInt(document.getElementById('pma-port').value, 10),
+  autoStart: document.getElementById('pma-autostart').checked,
+}, 'Menyimpan…'));
+
 async function delDb(name) {
   if (!(await confirmDialog({ title: 'Delete database?', message: 'Hapus database "' + name + '"? Semua data di dalamnya hilang permanen. User-nya tidak ikut dihapus.' }))) return;
   const r = await api('/api/db/' + dbType + '/databases/' + encodeURIComponent(name), { method: 'DELETE' }).catch(() => null);
@@ -1481,6 +1548,14 @@ refreshIcons();
 
 // ---------- AI Chat (ala opencode CLI) ----------
 let aiMessages = [];
+// Always Allow: sekali diklik di bubble approval, semua approval exec/write
+// berikutnya jalan otomatis TANPA bubble, sampai halaman di-reload.
+let aiAlwaysAllow = false;
+function aiSetAlwaysAllow(v) {
+  aiAlwaysAllow = !!v;
+  const ind = document.getElementById('ai-always-allow-ind');
+  if (ind) ind.classList.toggle('hidden', !aiAlwaysAllow);
+}
 try { aiMessages = JSON.parse(localStorage.getItem('terwo-ai-chat') || '[]').filter((m) => m && (m.role === 'user' || m.role === 'assistant')); } catch { aiMessages = []; }
 let aiSavedModel = '';
 let aiAbort = null;
@@ -1547,6 +1622,7 @@ document.getElementById('ai-save').addEventListener('click', async () => {
   } else { err.textContent = jj.error || 'Save gagal'; aiMsg(''); }
 });
 document.getElementById('ai-new').addEventListener('click', () => { aiMessages = []; aiSaveLocal(); renderAiMessages(); });
+document.getElementById('ai-always-allow-ind').addEventListener('click', () => aiSetAlwaysAllow(false));
 document.getElementById('ai-stop').addEventListener('click', () => { if (aiAbort) aiAbort.abort(); });
 async function aiSend() {
   if (document.getElementById('ai-agent-mode').checked) return aiSendAgent();
@@ -1643,6 +1719,12 @@ async function aiReadAgentStream(r, runTexts) {
         if (ev.type === 'text') { runTexts.push(ev.content || ''); aiAppendBubble('assistant', ev.content || ''); }
         else if (ev.type === 'tool') { aiAppendBubble('tool', '🔧 ' + ev.tool + ' ' + JSON.stringify(ev.args || {}) + '\n' + String(ev.result || '').slice(0, 1000)); }
         else if (ev.type === 'approval') {
+          if (aiAlwaysAllow) {
+            const rr = await fetch('/api/ai/agent/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: ev.runId, approved: true }), signal: aiAbort ? aiAbort.signal : undefined });
+            if (!rr.ok) { const jj = await rr.json().catch(() => ({})); throw new Error(jj.error || ('Approve gagal (' + rr.status + ')')); }
+            await aiReadAgentStream(rr, runTexts);
+            return;
+          }
           const box = document.getElementById('ai-messages');
           const d = document.createElement('div');
           d.className = 'rounded-xl px-3 py-2 text-sm';
@@ -1656,18 +1738,22 @@ async function aiReadAgentStream(r, runTexts) {
           row.className = 'flex gap-2 mt-2';
           const mkB = (label, cls) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; row.appendChild(b); return b; };
           const allowB = mkB('Allow', 'btn btn-sm');
+          const alwaysB = mkB('Always Allow', 'btn-ghost btn-sm');
           const denyB = mkB('Deny', 'btn-ghost btn-sm');
           const stopB = mkB('Stop run', 'btn-ghost btn-sm text-err');
           d.append(title, pre, row);
           box.appendChild(d);
           box.scrollTop = box.scrollHeight;
           const decision = await new Promise((resolve) => {
-            allowB.onclick = () => { allowB.disabled = denyB.disabled = stopB.disabled = true; resolve(true); };
-            denyB.onclick = () => { allowB.disabled = denyB.disabled = stopB.disabled = true; resolve(false); };
-            stopB.onclick = () => { allowB.disabled = denyB.disabled = stopB.disabled = true; resolve('stop'); };
+            const lock = () => { allowB.disabled = alwaysB.disabled = denyB.disabled = stopB.disabled = true; };
+            allowB.onclick = () => { lock(); resolve(true); };
+            alwaysB.onclick = () => { lock(); resolve('always'); };
+            denyB.onclick = () => { lock(); resolve(false); };
+            stopB.onclick = () => { lock(); resolve('stop'); };
           });
+          if (decision === 'always') { aiSetAlwaysAllow(true); }
           if (decision === 'stop') { const e = new Error('Agent dihentikan user'); e.name = 'AgentStopped'; throw e; }
-          const rr = await fetch('/api/ai/agent/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: ev.runId, approved: decision }), signal: aiAbort ? aiAbort.signal : undefined });
+          const rr = await fetch('/api/ai/agent/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: ev.runId, approved: decision === 'always' ? true : decision }), signal: aiAbort ? aiAbort.signal : undefined });
           if (!rr.ok) { const jj = await rr.json().catch(() => ({})); throw new Error(jj.error || ('Approve gagal (' + rr.status + ')')); }
           await aiReadAgentStream(rr, runTexts);
           return;

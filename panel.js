@@ -2180,6 +2180,158 @@ function apiTunnelStop(res) {
 }
 
 
+
+// ================= phpMyAdmin (ala aaPanel) =================
+// phpMyAdmin dikelola panel sebagai service lokal, sama polanya dengan
+// situs PHP: diunduh sekali (zip "latest" resmi dari phpmyadmin.net),
+// diekstrak ke ~/.termux-panel/phpmyadmin, lalu dijalankan dengan
+// `php -S 127.0.0.1:<port> -t <dir>`. Login OTOMATIS: config.inc.php
+// ditulis panel dari kredensial MySQL yang tersimpan di panel (auth_type
+// config), jadi tombol phpMyAdmin per database langsung membuka
+// <url>/index.php?db=<nama> tanpa halaman login.
+// Keamanan: bind HANYA 127.0.0.1 — phpMyAdmin tidak ikut tunnel panel,
+// jadi hanya bisa dibuka dari perangkat yang sama. Dengan auth config,
+// siapa pun yang bisa mencapai port itu = user DB tersebut; jangan
+// mem-proxy-kan port ini ke publik.
+const PMA_FILE = path.join(DATA_DIR, 'phpmyadmin.json');
+const PMA_DIR = path.join(DATA_DIR, 'phpmyadmin');
+const PMA_ZIP_URL = process.env.PMA_ZIP_URL || 'https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.zip';
+function loadPmaCfg() {
+  try {
+    const c = JSON.parse(fs.readFileSync(PMA_FILE, 'utf8'));
+    return { port: parseInt(c.port, 10) || 8081, autoStart: !!c.autoStart,
+      blowfish: typeof c.blowfish === 'string' && c.blowfish ? c.blowfish : '' };
+  } catch { return { port: 8081, autoStart: false, blowfish: '' }; }
+}
+function savePmaCfg() {
+  fs.writeFileSync(PMA_FILE, JSON.stringify(pmaCfg, null, 2), { mode: 0o600 });
+}
+let pmaCfg = loadPmaCfg();
+let pmaProc = null, pmaStartedAt = 0;
+function pmaInstalled() {
+  try { return fs.statSync(path.join(PMA_DIR, 'index.php')).isFile(); }
+  catch { return false; }
+}
+function pmaPublic() {
+  return { installed: pmaInstalled(), running: !!pmaProc,
+    url: 'http://127.0.0.1:' + pmaCfg.port, port: pmaCfg.port,
+    autoStart: pmaCfg.autoStart, startedAt: pmaStartedAt };
+}
+function phpEscape(v) {
+  return String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+function pmaWriteConfig() {
+  // Kredensial diambil dari config MySQL panel saat ini (bukan hardcode),
+  // jadi kalau user mengubah kredensial DB lalu me-restart phpMyAdmin,
+  // login otomatisnya ikut berubah. Blowfish dibuat sekali dan disimpan.
+  if (!pmaCfg.blowfish) { pmaCfg.blowfish = crypto.randomBytes(16).toString('hex'); savePmaCfg(); }
+  const cfg = dbCfgFor('mysql');
+  const lines = [
+    '<?php',
+    "$cfg['blowfish_secret'] = '" + phpEscape(pmaCfg.blowfish) + "';",
+    '$i = 0;',
+    '$i++;',
+    "$cfg['Servers'][$i]['auth_type'] = 'config';",
+    "$cfg['Servers'][$i]['host'] = '" + phpEscape(cfg.host || '127.0.0.1') + "';",
+    "$cfg['Servers'][$i]['port'] = '" + phpEscape(cfg.port || 3306) + "';",
+    "$cfg['Servers'][$i]['user'] = '" + phpEscape(cfg.user || 'root') + "';",
+    "$cfg['Servers'][$i]['password'] = '" + phpEscape(cfg.password || '') + "';",
+    "$cfg['Servers'][$i]['AllowNoPassword'] = true;",
+    "$cfg['Servers'][$i]['compress'] = false;",
+  ];
+  fs.writeFileSync(path.join(PMA_DIR, 'config.inc.php'), lines.join('\n') + '\n', { mode: 0o600 });
+}
+function runCmd(cmd, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { env: EXEC_ENV });
+    let out = '', errOut = '';
+    child.stdout.on('data', (d) => { out += d.toString('utf8'); });
+    child.stderr.on('data', (d) => { errOut += d.toString('utf8'); });
+    child.on('error', (e) => reject(e));
+    child.on('close', (code) => {
+      if (code === 0) resolve(out);
+      else reject(new Error((errOut || ('exit ' + code)).trim().slice(0, 500)));
+    });
+  });
+}
+async function pmaStart() {
+  if (pmaProc) return pmaPublic();
+  if (!pmaInstalled()) throw new Error('phpMyAdmin belum terpasang — klik Pasang dulu');
+  const hasPhp = await execCheck('command -v php >/dev/null 2>&1');
+  if (!hasPhp) throw new Error('PHP belum terpasang — pasang dulu lewat Store (pkg install php)');
+  pmaWriteConfig();
+  const child = spawn('php', ['-S', '127.0.0.1:' + pmaCfg.port, '-t', PMA_DIR], { cwd: PMA_DIR, env: EXEC_ENV });
+  pmaProc = child; pmaStartedAt = Date.now();
+  child.on('exit', () => { if (pmaProc === child) pmaProc = null; });
+  child.on('error', () => { if (pmaProc === child) pmaProc = null; });
+  return pmaPublic();
+}
+function pmaStop() {
+  if (pmaProc) { try { pmaProc.kill(); } catch { /* ignore */ } pmaProc = null; }
+  return pmaPublic();
+}
+async function pmaInstall() {
+  if (pmaInstalled()) throw new Error('phpMyAdmin sudah terpasang');
+  const hasPhp = await execCheck('command -v php >/dev/null 2>&1');
+  if (!hasPhp) throw new Error('PHP belum terpasang — pasang dulu lewat Store (pkg install php)');
+  const hasUnzip = await execCheck('command -v unzip >/dev/null 2>&1');
+  if (!hasUnzip) throw new Error('unzip belum terpasang — pasang dulu lewat Store (pkg install unzip)');
+  const warnings = [];
+  try {
+    const mods = await runCmd('php', ['-m']);
+    if (!/\bmysqli\b/.test(mods)) warnings.push('Ekstensi PHP mysqli tidak terdeteksi — phpMyAdmin mungkin gagal konek ke MariaDB.');
+    if (!/\bmbstring\b/.test(mods)) warnings.push('Ekstensi PHP mbstring tidak terdeteksi — phpMyAdmin mungkin error.');
+  } catch { /* cek ekstensi best-effort saja */ }
+  // Unduh -> ekstrak ke folder sementara -> pindahkan ke PMA_DIR hanya
+  // bila sukses, supaya instalasi gagal tidak meninggalkan folder setengah.
+  const zipPath = path.join(DATA_DIR, 'phpmyadmin.zip');
+  const tmpDir = path.join(DATA_DIR, 'phpmyadmin-tmp');
+  try {
+    const r = await fetch(PMA_ZIP_URL);
+    if (!r.ok) throw new Error('Unduhan gagal (HTTP ' + r.status + ')');
+    fs.writeFileSync(zipPath, Buffer.from(await r.arrayBuffer()));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.mkdirSync(tmpDir, { recursive: true });
+    await runCmd('unzip', ['-q', zipPath, '-d', tmpDir]);
+    const inner = fs.readdirSync(tmpDir).find((d) => d.startsWith('phpMyAdmin-') && fs.statSync(path.join(tmpDir, d)).isDirectory());
+    const src = inner ? path.join(tmpDir, inner) : tmpDir;
+    if (!fs.existsSync(path.join(src, 'index.php'))) throw new Error('Zip phpMyAdmin tidak berisi index.php');
+    fs.rmSync(PMA_DIR, { recursive: true, force: true });
+    fs.renameSync(src, PMA_DIR);
+  } finally {
+    try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+  pmaWriteConfig();
+  pmaCfg.autoStart = true; savePmaCfg();
+  await pmaStart();
+  return Object.assign({ ok: true, warnings }, pmaPublic());
+}
+async function apiPmaGet(res) { sendJson(res, 200, Object.assign({ ok: true }, pmaPublic())); }
+async function apiPmaInstall(req, res) {
+  try { sendJson(res, 200, await pmaInstall()); }
+  catch (e) { sendJson(res, 400, { ok: false, error: e.message }); }
+}
+async function apiPmaStart(req, res) {
+  try { sendJson(res, 200, Object.assign({ ok: true }, await pmaStart())); }
+  catch (e) { sendJson(res, 400, { ok: false, error: e.message }); }
+}
+function apiPmaStop(res) { sendJson(res, 200, Object.assign({ ok: true }, pmaStop())); }
+async function apiPmaConfig(req, res) {
+  try {
+    const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+    const port = parseInt(b.port, 10);
+    if (!port || port < 1024 || port > 65535) throw new Error('Port harus 1024–65535');
+    if (port === PORT) throw new Error('Port bentrok dengan port panel');
+    const wasRunning = !!pmaProc;
+    const portChanged = port !== pmaCfg.port;
+    pmaCfg.port = port; pmaCfg.autoStart = !!b.autoStart; savePmaCfg();
+    if (wasRunning && portChanged) { pmaStop(); await pmaStart(); }
+    sendJson(res, 200, Object.assign({ ok: true }, pmaPublic()));
+  } catch (e) { sendJson(res, 400, { ok: false, error: e.message }); }
+}
+
+
 // ================= Cloudflare Tunnel per website =================
 // Satu site = satu proses cloudflared sendiri, jadi tiap website punya URL
 // publiknya masing-masing (Quick: *.trycloudflare.com acak; Named: token CF).
@@ -2491,6 +2643,12 @@ async function handleRequest(req, res) {
       if (bkm[3] === 'restore' && req.method === 'POST') return apiBackupRestore(req, res, bkm[1]);
       if (!bkm[3] && req.method === 'DELETE') return apiBackupDelete(res, bkm[1]);
     }
+    // phpMyAdmin
+    if (req.method === 'GET' && p === '/api/phpmyadmin') return apiPmaGet(res);
+    if (req.method === 'POST' && p === '/api/phpmyadmin/install') return apiPmaInstall(req, res);
+    if (req.method === 'POST' && p === '/api/phpmyadmin/start') return apiPmaStart(req, res);
+    if (req.method === 'POST' && p === '/api/phpmyadmin/stop') return apiPmaStop(res);
+    if (req.method === 'POST' && p === '/api/phpmyadmin/config') return apiPmaConfig(req, res);
     // cloudflare tunnel (auto tunneling)
     if (req.method === 'GET' && p === '/api/tunnel') return apiTunnelGet(res);
     if (req.method === 'POST' && p === '/api/tunnel/start') return apiTunnelStart(req, res);
@@ -2565,6 +2723,7 @@ server.listen(PORT, HOST, () => {
   // 2) website yang autoStart-nya ON (Start = ON, Stop = OFF; site lama
   //    tanpa flag dianggap ON supaya yang sudah jalan balik lagi) nyala;
   // 3) tunnel per website yang enabled ikut nyala setelah sitenya jalan.
+  // 4) phpMyAdmin yang autoStart-nya ON ikut nyala (bind 127.0.0.1 saja).
   // Semua best-effort: satu yang gagal tidak menghentikan panel.
   autoConnectDb().catch((e) => console.log('Auto-connect database failed:', e.message));
   setInterval(() => { autoConnectDb().catch(() => {}); }, 30000);
@@ -2581,6 +2740,9 @@ server.listen(PORT, HOST, () => {
       }
     }
   })().catch((e) => console.log('Auto-start websites failed:', e.message));
+  if (pmaCfg.autoStart && pmaInstalled()) {
+    pmaStart().catch((e) => console.log('Auto-start phpMyAdmin failed:', e.message));
+  }
   console.log('Terwo running at http://' + HOST + ':' + PORT);
   console.log('Working directory: ' + ROOT);
   if (HOST === '0.0.0.0') {

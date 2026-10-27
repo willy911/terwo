@@ -1,4 +1,4 @@
-# Terwo v1.18.2
+# Terwo v1.19.0
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -194,6 +194,7 @@ Each website can be started/stopped/restarted, its logs viewed live from the
 panel, and its port number clicked to open the website directly.
 
 ## Database
+- phpMyAdmin ala aaPanel: kartu phpMyAdmin di tab Database (Pasang sekali dari phpmyadmin.net, Start/Stop, auto-start, port bisa diubah); tombol Open per database membuka `<url>/index.php?db=<nama>` dengan login otomatis dari kredensial MySQL panel (kalau berhenti, Open menyalakannya dulu; kalau belum terpasang, Open mengarahkan ke kartu phpMyAdmin). Klik nama database tetap membuka browser internal panel. Hanya di-bind ke 127.0.0.1 — tidak ikut tunnel panel. Mode Agent: tombol Always Allow di bubble approval — sekali diklik, approval exec/write berikutnya jalan otomatis sampai halaman di-reload (indikator di header chat, klik untuk mematikan).
 
 The **🗄️ Database** menu has two sub-tabs: **MySQL** and **PostgreSQL**.
 
