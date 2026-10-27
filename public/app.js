@@ -1549,6 +1549,7 @@ document.getElementById('ai-save').addEventListener('click', async () => {
 document.getElementById('ai-new').addEventListener('click', () => { aiMessages = []; aiSaveLocal(); renderAiMessages(); });
 document.getElementById('ai-stop').addEventListener('click', () => { if (aiAbort) aiAbort.abort(); });
 async function aiSend() {
+  if (document.getElementById('ai-agent-mode').checked) return aiSendAgent();
   const inp = document.getElementById('ai-input');
   const text = inp.value.trim();
   if (!text || aiAbort) return;
@@ -1608,3 +1609,100 @@ async function aiSend() {
 }
 document.getElementById('ai-send').addEventListener('click', aiSend);
 document.getElementById('ai-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSend(); } });
+
+// ---------- AI Agent mode ----------
+function aiAppendBubble(role, content) {
+  const el = document.getElementById('ai-messages');
+  const d = document.createElement('div');
+  d.className = 'rounded-xl px-3 py-2 text-sm whitespace-pre-wrap';
+  if (role === 'user') d.style.cssText = 'align-self:flex-end;background:var(--accent);color:#fff;max-width:85%';
+  else if (role === 'tool') d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%;border:1px dashed var(--border)';
+  else d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%';
+  d.textContent = content;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+  return d;
+}
+async function aiReadAgentStream(r, runTexts) {
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const parts = buf.split('\n\n');
+    buf = parts.pop();
+    for (const part of parts) {
+      for (const line of part.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let ev;
+        try { ev = JSON.parse(payload); } catch { continue; }
+        if (ev.type === 'text') { runTexts.push(ev.content || ''); aiAppendBubble('assistant', ev.content || ''); }
+        else if (ev.type === 'tool') { aiAppendBubble('tool', '🔧 ' + ev.tool + ' ' + JSON.stringify(ev.args || {}) + '\n' + String(ev.result || '').slice(0, 1000)); }
+        else if (ev.type === 'approval') {
+          const box = document.getElementById('ai-messages');
+          const d = document.createElement('div');
+          d.className = 'rounded-xl px-3 py-2 text-sm';
+          d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%;border:1px solid var(--warn, #f59e0b)';
+          const title = document.createElement('div');
+          title.textContent = '⚠️ Perlu approval: ' + ev.tool;
+          const pre = document.createElement('div');
+          pre.className = 'whitespace-pre-wrap font-mono text-[12.5px] mt-1';
+          pre.textContent = JSON.stringify(ev.args || {}, null, 2);
+          const row = document.createElement('div');
+          row.className = 'flex gap-2 mt-2';
+          const mkB = (label, cls) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; row.appendChild(b); return b; };
+          const allowB = mkB('Allow', 'btn btn-sm');
+          const denyB = mkB('Deny', 'btn-ghost btn-sm');
+          const stopB = mkB('Stop run', 'btn-ghost btn-sm text-err');
+          d.append(title, pre, row);
+          box.appendChild(d);
+          box.scrollTop = box.scrollHeight;
+          const decision = await new Promise((resolve) => {
+            allowB.onclick = () => { allowB.disabled = denyB.disabled = stopB.disabled = true; resolve(true); };
+            denyB.onclick = () => { allowB.disabled = denyB.disabled = stopB.disabled = true; resolve(false); };
+            stopB.onclick = () => { allowB.disabled = denyB.disabled = stopB.disabled = true; resolve('stop'); };
+          });
+          if (decision === 'stop') { const e = new Error('Agent dihentikan user'); e.name = 'AgentStopped'; throw e; }
+          const rr = await fetch('/api/ai/agent/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: ev.runId, approved: decision }), signal: aiAbort ? aiAbort.signal : undefined });
+          if (!rr.ok) { const jj = await rr.json().catch(() => ({})); throw new Error(jj.error || ('Approve gagal (' + rr.status + ')')); }
+          await aiReadAgentStream(rr, runTexts);
+          return;
+        }
+        else if (ev.type === 'done') { if (ev.note) aiAppendBubble('assistant', ev.note); return; }
+        else if (ev.type === 'error') { throw new Error(ev.error || 'Agent gagal'); }
+      }
+    }
+  }
+}
+async function aiSendAgent() {
+  const inp = document.getElementById('ai-input');
+  const text = inp.value.trim();
+  if (!text || aiAbort) return;
+  aiMessages.push({ role: 'user', content: text });
+  aiAppendBubble('user', text);
+  inp.value = '';
+  const sendBtn = document.getElementById('ai-send');
+  const stopBtn = document.getElementById('ai-stop');
+  sendBtn.disabled = true;
+  stopBtn.classList.remove('hidden');
+  aiAbort = new AbortController();
+  const runTexts = [];
+  try {
+    const r = await fetch('/api/ai/agent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: aiMessages }), signal: aiAbort.signal });
+    if (!r.ok) { const jj = await r.json().catch(() => ({})); throw new Error(jj.error || ('Agent gagal (' + r.status + ')')); }
+    await aiReadAgentStream(r, runTexts);
+  } catch (e) {
+    if (e.name === 'AbortError' || e.name === 'AgentStopped') aiAppendBubble('assistant', '[agent dihentikan]');
+    else aiAppendBubble('assistant', 'Error: ' + (e.message || 'Agent gagal'));
+  } finally {
+    if (runTexts.length) aiMessages.push({ role: 'assistant', content: runTexts.join('\n') });
+    aiSaveLocal();
+    aiAbort = null;
+    sendBtn.disabled = false;
+    stopBtn.classList.add('hidden');
+  }
+}

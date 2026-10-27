@@ -1051,6 +1051,162 @@ async function apiAiModels(req, res) {
   const models = data.map((m) => (typeof m === 'string' ? m : m.id)).filter(Boolean).sort();
   sendJson(res, 200, { models });
 }
+
+// ================= AI Agent mode (ala opencode) =================
+// Loop: model -> tool_call -> eksekusi di Termux -> hasil kembali ke model.
+// Tool baca (list_dir, read_file) jalan otomatis; tool tulis/eksekusi
+// (write_file, exec) SELALU minta approval user dulu — backend menyimpan
+// state run yang tertunda di memori (hilang bila panel restart) dan
+// menghentikan stream SSE-nya dengan event approval; frontend melanjutkan
+// lewat POST /api/ai/agent/approve yang membuka stream SSE baru.
+// Semua path file dikurung safePath (PANEL_ROOT, default $HOME) — sama
+// seperti File Manager. exec dibatasi 30 detik & output 20 KB, cwd default
+// PANEL_ROOT dan juga dikurung safePath.
+const AI_AGENT_SYSTEM = 'Kamu adalah AI agent yang berjalan di dalam panel Terwo di Termux/Android. Jawab dalam Bahasa Indonesia. Kamu punya tool: exec (jalankan perintah shell), read_file, write_file, list_dir. Semua file hanya di dalam home user. Gunakan tool untuk menyelesaikan tugas, jangan hanya menjelaskan. Setelah tool selesai, rangkum hasilnya dengan singkat. Bila tool ditolak user, jangan mengulang tool yang sama tanpa mengubah pendekatan.';
+const AI_AGENT_MAX_STEPS = 12;
+const aiAgentRuns = new Map();
+let aiAgentSeq = 0;
+function aiToolDefs() {
+  return [
+    { type: 'function', function: { name: 'exec', description: 'Jalankan perintah shell di Termux (bash -c). Output dibatasi 20 KB, timeout 30 detik.', parameters: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string', description: 'Direktori kerja, relatif terhadap home (default home)' } }, required: ['command'] } } },
+    { type: 'function', function: { name: 'read_file', description: 'Baca isi file teks (maks 100 KB, selebihnya dipotong). Path relatif terhadap home atau absolut di dalam home.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
+    { type: 'function', function: { name: 'write_file', description: 'Tulis/overwrite file teks. Path relatif terhadap home atau absolut di dalam home.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+    { type: 'function', function: { name: 'list_dir', description: 'Daftar isi direktori (maks 200 entri). Path relatif terhadap home atau absolut di dalam home.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: [] } } },
+  ];
+}
+function aiSse(res, obj) { try { res.write('data: ' + JSON.stringify(obj) + '\n\n'); } catch {} }
+async function aiCallAgentUpstream(cfg, messages) {
+  const r = await fetch(aiNormBase(cfg.endpoint) + '/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey },
+    body: JSON.stringify({ model: cfg.model, messages, tools: aiToolDefs(), tool_choice: 'auto' }),
+  });
+  const txt = await r.text();
+  if (!r.ok) throw new Error('Agent gagal (' + r.status + '): ' + txt.slice(0, 300));
+  let j;
+  try { j = JSON.parse(txt); } catch { throw new Error('Respons agent bukan JSON'); }
+  const d = j.data || j;
+  const msg = (d.choices && d.choices[0] && d.choices[0].message) || null;
+  if (!msg) throw new Error('Respons agent tidak berisi pesan');
+  return msg;
+}
+function aiExecTool(name, args) {
+  return new Promise((resolve) => {
+    try {
+      if (name === 'list_dir') {
+        const full = safePath(args.path || '.');
+        const names = fs.readdirSync(full, { withFileTypes: true }).slice(0, 200);
+        resolve(JSON.stringify(names.map((e) => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' }))));
+        return;
+      }
+      if (name === 'read_file') {
+        const full = safePath(args.path || '');
+        const buf = fs.readFileSync(full);
+        const text = buf.toString('utf8');
+        resolve(text.length > 100000 ? text.slice(0, 100000) + '\n... [dipotong, file lebih dari 100 KB]' : text);
+        return;
+      }
+      if (name === 'write_file') {
+        const full = safePath(args.path || '');
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, String(args.content || ''));
+        resolve('OK, ' + Buffer.byteLength(String(args.content || '')) + ' byte ditulis ke ' + args.path);
+        return;
+      }
+      if (name === 'exec') {
+        const cwd = safePath(args.cwd || '.');
+        const child = spawn('bash', ['-c', String(args.command || '')], { cwd });
+        let out = '', err = '';
+        const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 30000);
+        child.stdout.on('data', (d) => { out += d.toString('utf8'); });
+        child.stderr.on('data', (d) => { err += d.toString('utf8'); });
+        child.on('error', (e) => { clearTimeout(timer); resolve('exec error: ' + e.message); });
+        child.on('exit', (code) => {
+          clearTimeout(timer);
+          let combined = out;
+          if (err) combined += (combined ? '\n[stderr]\n' : '') + err;
+          if (combined.length > 20000) combined = combined.slice(0, 20000) + '\n... [output dipotong 20 KB]';
+          resolve('exit code ' + code + (combined ? '\n' + combined : ' (tanpa output)'));
+        });
+        return;
+      }
+      resolve('Tool tidak dikenal: ' + name);
+    } catch (e) { resolve('Tool ' + name + ' gagal: ' + e.message); }
+  });
+}
+async function aiAgentLoop(res, state) {
+  while (state.steps < AI_AGENT_MAX_STEPS) {
+    let toolCalls = state.queue || null;
+    state.queue = null;
+    if (!toolCalls) {
+      const msg = await aiCallAgentUpstream(state.cfg, state.messages);
+      state.messages.push(msg);
+      if (msg.content) aiSse(res, { type: 'text', content: msg.content });
+      toolCalls = msg.tool_calls || [];
+      if (!toolCalls.length) { aiSse(res, { type: 'done' }); return; }
+      state.steps++;
+    }
+    for (let i = 0; i < toolCalls.length; i++) {
+      const tc = toolCalls[i];
+      const tname = (tc.function && tc.function.name) || '';
+      let targs = {};
+      try { targs = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch {}
+      if (tname === 'list_dir' || tname === 'read_file') {
+        const result = await aiExecTool(tname, targs);
+        state.messages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+        aiSse(res, { type: 'tool', tool: tname, args: targs, result });
+      } else if (tname === 'exec' || tname === 'write_file') {
+        state.queue = toolCalls.slice(i + 1);
+        state.pending = tc;
+        aiAgentRuns.set(state.runId, state);
+        aiSse(res, { type: 'approval', runId: state.runId, tool: tname, args: targs });
+        return;
+      } else {
+        state.messages.push({ role: 'tool', tool_call_id: tc.id, content: 'Tool tidak dikenal: ' + tname });
+        aiSse(res, { type: 'tool', tool: tname, args: targs, result: 'Tool tidak dikenal' });
+      }
+    }
+  }
+  aiSse(res, { type: 'done', note: 'Batas ' + AI_AGENT_MAX_STEPS + ' langkah tercapai' });
+}
+async function apiAiAgent(req, res) {
+  const cfg = loadAiConfig();
+  if (!cfg.endpoint || !cfg.apiKey || !cfg.model) throw new Error('AI belum diatur: isi endpoint, API key, dan model di Settings AI dulu');
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const msgs = (Array.isArray(b.messages) ? b.messages : [])
+    .filter((m) => m && typeof m.content === 'string' && (m.role === 'user' || m.role === 'assistant'))
+    .slice(-50);
+  if (!msgs.length || msgs[msgs.length - 1].role !== 'user') throw new Error('Pesan terakhir harus dari user');
+  const state = { runId: 'ai' + (++aiAgentSeq) + '-' + Date.now(), cfg, messages: [{ role: 'system', content: AI_AGENT_SYSTEM }, ...msgs], steps: 0, queue: null, pending: null };
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  try { await aiAgentLoop(res, state); } catch (e) { aiSse(res, { type: 'error', error: e.message }); }
+  res.end();
+}
+async function apiAiAgentApprove(req, res) {
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const state = aiAgentRuns.get(b.runId || '');
+  if (!state || !state.pending) throw new Error('Run agent tidak ditemukan (mungkin panel sudah restart atau approval sudah dijawab)');
+  aiAgentRuns.delete(b.runId);
+  const tc = state.pending;
+  state.pending = null;
+  const tname = (tc.function && tc.function.name) || '';
+  let targs = {};
+  try { targs = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch {}
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  try {
+    if (b.approved) {
+      const result = await aiExecTool(tname, targs);
+      state.messages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+      aiSse(res, { type: 'tool', tool: tname, args: targs, result });
+    } else {
+      state.messages.push({ role: 'tool', tool_call_id: tc.id, content: 'User menolak menjalankan tool ini.' });
+      aiSse(res, { type: 'tool', tool: tname, args: targs, result: 'DITOLAK user' });
+    }
+    await aiAgentLoop(res, state);
+  } catch (e) { aiSse(res, { type: 'error', error: e.message }); }
+  res.end();
+}
+
 async function apiAiChat(req, res) {
   const cfg = loadAiConfig();
   if (!cfg.endpoint || !cfg.apiKey || !cfg.model) throw new Error('AI belum diatur: isi endpoint, API key, dan model di Settings AI dulu');
@@ -2169,6 +2325,8 @@ async function handleRequest(req, res) {
     if (p === '/api/ai/config' && req.method === 'POST') return apiAiConfigSave(req, res);
     if (p === '/api/ai/models' && req.method === 'POST') return apiAiModels(req, res);
     if (p === '/api/ai/chat' && req.method === 'POST') return apiAiChat(req, res);
+    if (p === '/api/ai/agent' && req.method === 'POST') return apiAiAgent(req, res);
+    if (p === '/api/ai/agent/approve' && req.method === 'POST') return apiAiAgentApprove(req, res);
     // Manajemen database ala aaPanel (detail, hapus, user, backup/restore)
     if (p === '/api/db/backups' && req.method === 'GET') return apiDbBackups(res);
     const ddet = p.match(/^\/api\/db\/(mysql|postgres)\/databases\/details$/);

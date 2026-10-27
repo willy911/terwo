@@ -237,9 +237,11 @@
       <div class="mb-2 flex flex-wrap items-center gap-2">
         <h4 class="flex items-center gap-2 text-sm font-semibold"><i data-lucide="message-square" class="h-4 w-4 text-accent-h"></i>Chat</h4>
         <span id="ai-chat-model" class="muted text-sm"></span>
+        <label class="lbl-check"><input id="ai-agent-mode" type="checkbox" class="h-4 w-4 accent-accent">Mode Agent</label>
         <button id="ai-new" class="btn-ghost btn-sm"><i data-lucide="plus" class="h-4 w-4"></i>New Chat</button>
         <button id="ai-stop" class="btn-ghost btn-sm hidden"><i data-lucide="square" class="h-4 w-4"></i>Stop</button>
       </div>
+      <p class="hint">Mode Agent: AI boleh memanggil tool — baca file/direktori jalan otomatis, tulis file &amp; eksekusi perintah selalu minta Allow dulu. Tool hanya berlaku di dalam home user.</p>
       <div id="ai-messages" class="flex flex-col gap-2" style="max-height:55vh;overflow-y:auto"></div>
       <textarea id="ai-input" class="inp mt-3" rows="2" placeholder="Tulis pesan… (Enter = kirim, Shift+Enter = baris baru)"></textarea>
       <button id="ai-send" class="btn btn-sm mt-2"><i data-lucide="send" class="h-4 w-4"></i>Send</button>

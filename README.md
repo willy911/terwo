@@ -1,4 +1,4 @@
-# Terwo v1.17.0
+# Terwo v1.18.0
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -117,6 +117,12 @@ PANEL_PORT=9000 node panel.js
 - **Website** — mini hosting for Node.js, PHP, Static, and Go projects:
   add websites, start/stop/restart, view logs, open directly from the port number.
   Includes a **Nginx reverse proxy** GUI: add/remove proxy hosts, start/stop/reload nginx.
+- **AI Agent mode (ala opencode)** — centang Mode Agent di tab AI Chat:
+  model bisa memanggil tool `exec`, `read_file`, `write_file`, `list_dir`
+  dalam loop (maks 12 langkah). Tool baca jalan otomatis; `write_file` dan
+  `exec` selalu minta approval Allow/Deny/Stop di chat dulu. Semua path
+  dikurung di home user (safePath), exec dibatasi 30 detik & output 20 KB.
+  Butuh model yang mendukung function calling OpenAI-compatible.
 - **AI Chat (ala opencode CLI)** — menu AI dengan chat streaming ke endpoint
   OpenAI-compatible: Settings AI berisi endpoint, API key, tombol Fetch
   Models (GET /v1/models), select model + ketik manual, dan Save. Key
