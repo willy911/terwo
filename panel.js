@@ -1083,12 +1083,60 @@ async function aiCallAgentUpstream(cfg, messages) {
   });
   const txt = await r.text();
   if (!r.ok) throw new Error('Agent gagal (' + r.status + '): ' + txt.slice(0, 300));
-  let j;
-  try { j = JSON.parse(txt); } catch { throw new Error('Respons agent bukan JSON'); }
-  const d = j.data || j;
-  const msg = (d.choices && d.choices[0] && d.choices[0].message) || null;
-  if (!msg) throw new Error('Respons agent tidak berisi pesan');
-  return msg;
+  // Router non-standar (termasuk 9Router) bisa mengembalikan: JSON biasa,
+  // JSON berbungkus {"data": ...}, atau SSE padahal stream:false — semuanya
+  // harus bisa diurai, bukan langsung gagal "bukan JSON".
+  const clean = txt.replace(/^\uFEFF/, '').trim();
+  try {
+    const j = JSON.parse(clean);
+    const d = j.data || j;
+    if (d.error) throw new Error('Upstream error: ' + JSON.stringify(d.error).slice(0, 300));
+    const msg = (d.choices && d.choices[0] && d.choices[0].message) || null;
+    if (msg) return msg;
+  } catch (e) {
+    if (e.message && e.message.startsWith('Upstream error:')) throw e;
+    // Lanjut ke parsing SSE di bawah; bila itu pun gagal, error akhir
+    // menyertakan cuplikan balasan upstream agar bisa didiagnosis.
+  }
+  if (clean.startsWith('data:')) {
+    let content = '';
+    const toolMap = new Map();
+    let lastMsg = null;
+    for (const line of clean.split('\n')) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let pj;
+      try { pj = JSON.parse(payload); } catch { continue; }
+      const d = pj.data || pj;
+      if (d.error) throw new Error('Upstream error: ' + JSON.stringify(d.error).slice(0, 300));
+      const ch = d.choices && d.choices[0];
+      if (!ch) continue;
+      if (ch.message) lastMsg = ch.message;
+      if (ch.delta) {
+        if (ch.delta.content) content += ch.delta.content;
+        // Tool call streaming terpecah per delta (index-based): rakit kembali
+        // nama + argumen dari fragmen-fragmennya.
+        for (const t of (ch.delta.tool_calls || [])) {
+          const idx = (t.index === undefined || t.index === null) ? 0 : t.index;
+          const cur = toolMap.get(idx) || { id: t.id || ('call_sse_' + idx), type: 'function', function: { name: '', arguments: '' } };
+          if (t.id) cur.id = t.id;
+          if (t.function) {
+            if (t.function.name) cur.function.name += t.function.name;
+            if (t.function.arguments) cur.function.arguments += t.function.arguments;
+          }
+          toolMap.set(idx, cur);
+        }
+      }
+    }
+    if (lastMsg) return lastMsg;
+    if (content || toolMap.size) {
+      const msg = { role: 'assistant', content: content || null };
+      if (toolMap.size) msg.tool_calls = [...toolMap.values()];
+      return msg;
+    }
+  }
+  throw new Error('Respons agent bukan JSON. Upstream mengembalikan: ' + (clean.slice(0, 300) || '(kosong)'));
 }
 function aiExecTool(name, args) {
   return new Promise((resolve) => {

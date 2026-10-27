@@ -1,4 +1,4 @@
-# Terwo v1.18.0
+# Terwo v1.18.1
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -123,6 +123,9 @@ PANEL_PORT=9000 node panel.js
   `exec` selalu minta approval Allow/Deny/Stop di chat dulu. Semua path
   dikurung di home user (safePath), exec dibatasi 30 detik & output 20 KB.
   Butuh model yang mendukung function calling OpenAI-compatible.
+  Parser agent toleran terhadap router non-standar: JSON, JSON berbungkus
+  `data`, maupun SSE (termasuk tool_call terpecah per delta); bila tetap
+  tidak bisa diurai, pesan error menampilkan cuplikan balasan upstream.
 - **AI Chat (ala opencode CLI)** — menu AI dengan chat streaming ke endpoint
   OpenAI-compatible: Settings AI berisi endpoint, API key, tombol Fetch
   Models (GET /v1/models), select model + ketik manual, dan Save. Key
