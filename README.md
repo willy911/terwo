@@ -1,4 +1,4 @@
-# Terwo v1.14.0
+# Terwo v1.15.0
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -118,7 +118,27 @@ PANEL_PORT=9000 node panel.js
   add websites, start/stop/restart, view logs, open directly from the port number.
   Includes a **Nginx reverse proxy** GUI: add/remove proxy hosts, start/stop/reload nginx.
 - **Database** — manage MySQL & PostgreSQL: connect, browse databases/tables,
-  run SQL.
+  run SQL, create a database from the **Create Database** button (modal, no
+  SQL typing needed; names are validated to letters/digits/underscore).
+  Database yang config-nya pernah disimpan lewat Save & Connect akan
+  auto-connect saat panel dijalankan (dicoba lagi tiap 30 detik sampai
+  server databasenya hidup); Disconnect manual dihormati, retry tidak
+  menyalakannya lagi.
+- **Auto-start saat panel dijalankan** (`pm2 start terwo`) — database
+  auto-connect, website yang autoStart-nya ON kembali jalan, dan tunnel
+  per website yang enabled ikut nyala. Semantik saklar: Start website =
+  auto-start ON, Stop website = OFF. Website lama tanpa flag dianggap ON
+  pada start pertama setelah update, supaya yang sudah jalan balik lagi.
+- **Tunnel per website (di menu Website, bukan tab sendiri)** — tiap
+  website punya tunnel Cloudflare-nya sendiri: di tabel Website, kolom
+  **Akses** punya opsi eksplisit **Stay Local** (hanya localhost) /
+  **Tunneling** (URL publik Cloudflare), plus tombol **Atur** untuk memilih
+  mode Quick tanpa akun atau Named pakai token Cloudflare Zero Trust +
+  hostname opsional. URL publiknya tampil di bawah opsi Akses. Tunnel
+  hanya jalan saat websitenya jalan, ikut mati saat site Stop/crash, dan
+  kembali nyala saat site di-Start — termasuk saat panel restart dan site
+  auto-start. Tunnel untuk panel itu sendiri (bukan website) ada di menu
+  **Settings**, kartu Tunnel Panel.
 - **🏪 Store** — 1-click install: nginx, nodejs, nvm, pm2,
   mysql (mariadb), postgresql, php, bun, redis, python, cronie, golang,
   9router, hermes, cloudflared, zip, unzip, openssh, termux-api, git,

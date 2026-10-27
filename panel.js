@@ -319,7 +319,16 @@ function pushLog(id, line) {
 
 async function apiSitesList(res) {
   sendJson(res, 200, {
-    sites: sites.map((s) => Object.assign({}, s, { running: running.has(s.id) })),
+    sites: sites.map((s) => {
+      const copy = Object.assign({}, s, { running: running.has(s.id) });
+      delete copy.tunnel; // token tunnel tidak pernah keluar lewat API
+      if (s.tunnel) {
+        copy.tunnel = { enabled: !!s.tunnel.enabled, mode: s.tunnel.mode || 'quick',
+          hostname: s.tunnel.hostname || '', hasToken: !!s.tunnel.token,
+          running: siteTunnelRunning(s.id), url: siteTunnelUrl(s.id) };
+      }
+      return copy;
+    }),
   });
 }
 
@@ -342,15 +351,15 @@ async function apiSiteCreate(req, res) {
   const site = {
     id: crypto.randomBytes(8).toString('hex'),
     name, type, path: relOf(full), port: portNum, created: Date.now(),
+    autoStart: false, // jadi true saat site di-Start (Start = auto-start saat panel restart)
   };
   sites.push(site);
   saveSites();
   sendJson(res, 200, { ok: true, site });
 }
 
-async function apiSiteStart(req, res, id) {
-  const site = siteById(id);
-  if (!site) throw new Error('Website not found');
+async function doSiteStart(site) {
+  const id = site.id;
   if (running.has(id)) throw new Error('Already running');
   const full = safePath(site.path);
   if (site.type === 'static') {
@@ -389,17 +398,35 @@ async function apiSiteStart(req, res, id) {
     const r = running.get(id);
     if (r) deadLogs.set(id, r.logs.join(''));
     running.delete(id);
+    // Site mati (crash/exit) = tunnel-nya ikut mati, tapi flag enabled
+    // dipertahankan supaya site yang di-Restart kembali men-tunnel.
+    try { stopSiteTunnel(id, false); } catch {}
   };
   child.on('exit', (code) => { pushLog(id, '--- berhenti (exit ' + code + ') ---\n'); finish(); });
   child.on('error', (e) => { pushLog(id, '--- failed to start: ' + e.message + ' ---\n'); finish(); });
+}
+
+async function apiSiteStart(req, res, id) {
+  const site = siteById(id);
+  if (!site) throw new Error('Website not found');
+  await doSiteStart(site);
+  site.autoStart = true; saveSites();
+  if (site.tunnel && site.tunnel.enabled) {
+    try { await startSiteTunnel(site); }
+    catch (e) { console.log('Site tunnel failed (' + site.name + '): ' + e.message); }
+  }
   sendJson(res, 200, { ok: true });
 }
 
 async function apiSiteStop(req, res, id) {
+  const site = siteById(id);
+  if (!site) throw new Error('Website not found');
   const rec = running.get(id);
   if (!rec) throw new Error('Not running');
   try { rec.child.kill(); } catch { /* ignore */ }
   running.delete(id);
+  site.autoStart = false; saveSites();
+  try { stopSiteTunnel(id, false); } catch {}
   sendJson(res, 200, { ok: true });
 }
 
@@ -414,6 +441,7 @@ async function apiSiteRestart(req, res, id) {
 }
 
 async function apiSiteDelete(req, res, id) {
+  try { stopSiteTunnel(id, true); } catch {}
   const rec = running.get(id);
   if (rec) {
     try { rec.child.kill(); } catch { /* ignore */ }
@@ -633,13 +661,7 @@ async function apiDbTest(req, res, t) {
     sendJson(res, 200, { ok: false, error: e.message || 'Connection failed' });
   }
 }
-async function apiDbConnect(req, res, t) {
-  dbValidType(t);
-  const body = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
-  const cfg = normCfg(t, body);
-  const cfgs = loadDbConfigs();
-  cfgs[t] = cfg;
-  saveDbConfigs(cfgs);
+async function connectDb(t, cfg) {
   dbDisconnect(t);
   try {
     if (t === 'mysql') {
@@ -656,6 +678,21 @@ async function apiDbConnect(req, res, t) {
     }
   } catch (e) {
     dbDisconnect(t);
+    throw e;
+  }
+  return dbConns[t];
+}
+async function apiDbConnect(req, res, t) {
+  dbValidType(t);
+  const body = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const cfg = normCfg(t, body);
+  const cfgs = loadDbConfigs();
+  cfgs[t] = cfg;
+  saveDbConfigs(cfgs);
+  dbAutoOff[t] = false; // connect manual mengaktifkan lagi auto-connect
+  try {
+    await connectDb(t, cfg);
+  } catch (e) {
     return sendJson(res, 400, { error: 'Connection failed: ' + (e.message || 'unknown') });
   }
   sendJson(res, 200, { ok: true, databases: await dbListDatabases(t) });
@@ -663,11 +700,62 @@ async function apiDbConnect(req, res, t) {
 function apiDbDisconnect(res, t) {
   dbValidType(t);
   dbDisconnect(t);
+  dbAutoOff[t] = true; // Disconnect manual dihormati: retry tidak menyalakan lagi
   sendJson(res, 200, { ok: true });
+}
+// ================= Auto-connect database saat panel dijalankan =================
+// Hanya untuk tipe yang config-nya pernah disimpan lewat Save & Connect
+// (tidak menebak-nebak kredensial default untuk database yang belum pernah
+// dipakai). Gagal di awal tidak menghentikan panel: dicoba lagi tiap 30 detik
+// sampai server databasenya hidup (mis. panel start duluan sebelum mysqld).
+// Kegagalan hanya dilog sekali per tipe sampai berhasil, supaya log tidak spam.
+const dbAutoOff = {};
+const dbAutoLoggedFail = {};
+let dbAutoBusy = false;
+async function autoConnectDb() {
+  if (dbAutoBusy) return;
+  dbAutoBusy = true;
+  try {
+    const cfgs = loadDbConfigs();
+    for (const t of ['mysql', 'postgres']) {
+      if (dbConns[t] || dbAutoOff[t] || !cfgs[t]) continue;
+      try {
+        await connectDb(t, normCfg(t, cfgs[t]));
+        delete dbAutoLoggedFail[t];
+        console.log('Auto-connected database (' + t + ')');
+      } catch (e) {
+        if (!dbAutoLoggedFail[t]) {
+          dbAutoLoggedFail[t] = true;
+          console.log('Auto-connect database (' + t + ') failed: ' + (e.message || 'unknown') + ' (will retry)');
+        }
+      }
+    }
+  } finally {
+    dbAutoBusy = false;
+  }
 }
 async function apiDbDatabases(res, t) {
   dbValidType(t);
   sendJson(res, 200, { databases: await dbListDatabases(t) });
+}
+async function apiDbCreate(req, res, t) {
+  dbValidType(t);
+  const body = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const name = (body.name || '').trim();
+  // Nama identifier aman untuk di-quote langsung: huruf/underscore pembuka,
+  // lalu huruf/angka/underscore, maks 64 karakter (batas MySQL & Postgres).
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) {
+    throw new Error('Nama database tidak valid (huruf, angka, underscore; diawali huruf/underscore; maks 64 karakter)');
+  }
+  if (!dbConns[t]) throw new Error('Not connected');
+  if (t === 'mysql') {
+    await dbQuery(t, 'CREATE DATABASE `' + name + '`');
+  } else {
+    // Postgres: CREATE DATABASE tidak bisa jalan di dalam transaksi; koneksi
+    // panel tidak membuka transaksi eksplisit, jadi query langsung aman.
+    await dbQuery(t, 'CREATE DATABASE ' + pgIdent(name));
+  }
+  sendJson(res, 200, { ok: true, database: name, databases: await dbListDatabases(t) });
 }
 async function apiDbTables(url, res, t) {
   dbValidType(t);
@@ -1523,6 +1611,131 @@ function apiTunnelStop(res) {
   sendJson(res, 200, Object.assign({ ok: true }, stopTunnel()));
 }
 
+
+// ================= Cloudflare Tunnel per website =================
+// Satu site = satu proses cloudflared sendiri, jadi tiap website punya URL
+// publiknya masing-masing (Quick: *.trycloudflare.com acak; Named: token CF).
+// Config tunnel per site disimpan di sites.json (mode 0600, sama seperti
+// file data panel lain) dan TIDAK PERNAH dikembalikan lewat API (token
+// diganti flag hasToken di apiSitesList). Semantik saklar sama seperti
+// tunnel panel: enabled=true dipertahankan saat site Stop/Restart, dan
+// tunnel ikut nyala lagi saat site di-Start — termasuk saat panel restart
+// dan site auto-start. Stop tunnel lewat API (persist=true) yang mematikan
+// flag enabled-nya.
+const siteTunnels = new Map(); // siteId -> { proc, url, logs[], startedAt, stopping, restartTimer }
+function siteTunnelRunning(id) { return siteTunnels.has(id); }
+function siteTunnelUrl(id) { const r = siteTunnels.get(id); return r ? r.url : ''; }
+function siteTunnelPublic(site) {
+  const r = siteTunnels.get(site.id);
+  const t = site.tunnel || {};
+  return { enabled: !!t.enabled, mode: t.mode || 'quick', hostname: t.hostname || '',
+    hasToken: !!t.token, running: !!r, url: r ? r.url : '', startedAt: r ? r.startedAt : 0 };
+}
+function siteTunnelPushLog(id, line) {
+  const r = siteTunnels.get(id);
+  if (!r) return;
+  r.logs.push(line);
+  if (r.logs.length > 200) r.logs.splice(0, r.logs.length - 200);
+}
+async function startSiteTunnel(site) {
+  const cfg = site.tunnel;
+  if (!cfg || !cfg.enabled) return null;
+  if (siteTunnels.has(site.id)) return siteTunnelPublic(site);
+  await mustBin('cloudflared', 'cloudflared is not installed. Install it first via the Store menu.');
+  let args;
+  if (cfg.mode === 'token') {
+    const token = String(cfg.token || '').trim();
+    if (!token || !/^[A-Za-z0-9._-]+$/.test(token)) {
+      throw new Error('Token Cloudflare wajib diisi (tempel token tunnel dari dashboard Cloudflare Zero Trust)');
+    }
+    args = ['tunnel', '--no-autoupdate', 'run', '--token', token];
+  } else {
+    args = ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:' + site.port];
+  }
+  const child = spawn('cloudflared', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const rec = { proc: child, url: '', logs: [], startedAt: Date.now(), stopping: false, restartTimer: null };
+  siteTunnels.set(site.id, rec);
+  let buf = '';
+  const onData = (d) => {
+    buf += d.toString('utf8');
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const line of lines) {
+      siteTunnelPushLog(site.id, line + '\n');
+      if (!rec.url) {
+        const m = line.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+        if (m) rec.url = m[0];
+      }
+    }
+  };
+  child.stdout.on('data', onData);
+  child.stderr.on('data', onData);
+  child.on('error', (e) => {
+    siteTunnelPushLog(site.id, '--- site tunnel failed to start: ' + e.message + ' ---\n');
+    siteTunnels.delete(site.id);
+  });
+  child.on('exit', (code) => {
+    siteTunnelPushLog(site.id, '--- site tunnel stopped (exit ' + code + ') ---\n');
+    const wasStopping = rec.stopping;
+    siteTunnels.delete(site.id);
+    // Auto-reconnect: hanya bila tunnel masih enabled DAN sitenya masih jalan.
+    const cur = siteById(site.id);
+    if (!wasStopping && cur && cur.tunnel && cur.tunnel.enabled && running.has(site.id)) {
+      setTimeout(() => {
+        const c2 = siteById(site.id);
+        if (c2 && c2.tunnel && c2.tunnel.enabled && running.has(site.id) && !siteTunnels.has(site.id)) {
+          startSiteTunnel(c2).catch((e) => console.log('Site tunnel auto-restart failed (' + c2.name + '): ' + e.message));
+        }
+      }, 5000);
+    }
+  });
+  return siteTunnelPublic(site);
+}
+function stopSiteTunnel(id, persist) {
+  const r = siteTunnels.get(id);
+  if (r) {
+    r.stopping = true;
+    if (r.restartTimer) clearTimeout(r.restartTimer);
+    try { r.proc.kill(); } catch {}
+    siteTunnels.delete(id);
+  }
+  if (persist) {
+    const site = siteById(id);
+    if (site && site.tunnel) { site.tunnel.enabled = false; saveSites(); }
+  }
+}
+async function apiSiteTunnelStart(req, res, id) {
+  const site = siteById(id);
+  if (!site) throw new Error('Website not found');
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const mode = b.mode === 'token' ? 'token' : 'quick';
+  const token = (b.token || '').trim() || (site.tunnel ? site.tunnel.token : '');
+  // Validasi di sini juga (bukan hanya saat proses tunnel nyala), supaya
+  // mode token tanpa token ditolak langsung saat diaktifkan — termasuk
+  // saat sitenya belum jalan dan tunnel baru dicatat enabled.
+  if (mode === 'token' && (!token || !/^[A-Za-z0-9._-]+$/.test(token))) {
+    throw new Error('Token Cloudflare wajib diisi (tempel token tunnel dari dashboard Cloudflare Zero Trust)');
+  }
+  site.tunnel = { enabled: true, mode, token: token || '',
+    hostname: (b.hostname || '').trim() || (site.tunnel ? site.tunnel.hostname : '') };
+  saveSites();
+  // Site belum jalan: tunnel dicatat enabled, tapi prosesnya baru nyala
+  // saat site di-Start (tunnel ke upstream yang mati hanya akan 502).
+  if (running.has(id)) await startSiteTunnel(site);
+  sendJson(res, 200, { ok: true, siteRunning: running.has(id), tunnel: siteTunnelPublic(site) });
+}
+function apiSiteTunnelStop(res, id) {
+  const site = siteById(id);
+  if (!site) throw new Error('Website not found');
+  stopSiteTunnel(id, true);
+  sendJson(res, 200, { ok: true, tunnel: siteTunnelPublic(site) });
+}
+function apiTunnelsList(res) {
+  sendJson(res, 200, { panel: tunnelPublic(),
+    sites: sites.map((s) => ({ id: s.id, name: s.name, port: s.port,
+      running: running.has(s.id), tunnel: siteTunnelPublic(s) })) });
+}
+
 // ================= HTTP server =================
 const server = http.createServer((req, res) => {
   handleRequest(req, res).catch((e) => {
@@ -1606,6 +1819,12 @@ async function handleRequest(req, res) {
     // website hosting
     if (p === '/api/sites' && req.method === 'GET') return apiSitesList(res);
     if (p === '/api/sites' && req.method === 'POST') return apiSiteCreate(req, res);
+    const stm = p.match(/^\/api\/sites\/([0-9a-f]{16})\/tunnel\/(start|stop)$/);
+    if (stm) {
+      if (stm[2] === 'start' && req.method === 'POST') return apiSiteTunnelStart(req, res, stm[1]);
+      if (stm[2] === 'stop' && req.method === 'POST') return apiSiteTunnelStop(res, stm[1]);
+    }
+    if (p === '/api/tunnels' && req.method === 'GET') return apiTunnelsList(res);
     const sm = p.match(/^\/api\/sites\/([0-9a-f]{16})\/(start|stop|restart|delete|logs)$/);
     if (sm) {
       const sid = sm[1], act = sm[2];
@@ -1634,6 +1853,7 @@ async function handleRequest(req, res) {
       if (da === 'connect' && req.method === 'POST') return apiDbConnect(req, res, dt);
       if (da === 'disconnect' && req.method === 'POST') return apiDbDisconnect(res, dt);
       if (da === 'databases' && req.method === 'GET') return apiDbDatabases(res, dt);
+      if (da === 'databases' && req.method === 'POST') return apiDbCreate(req, res, dt);
       if (da === 'tables' && req.method === 'GET') return apiDbTables(url, res, dt);
       if (da === 'rows' && req.method === 'GET') return apiDbRows(url, res, dt);
       if (da === 'query' && req.method === 'POST') return apiDbQuery(req, res, dt);
@@ -1742,6 +1962,28 @@ server.listen(PORT, HOST, () => {
   if (tunnelCfg.enabled) {
     startTunnel(tunnelCfg).catch((e) => console.log('Auto tunnel failed:', e.message));
   }
+  // Auto-start semuanya saat panel dijalankan (pm2 start terwo):
+  // 1) database yang config-nya pernah disimpan langsung connect,
+  //    lalu dicoba lagi tiap 30 detik sampai server DB-nya hidup;
+  // 2) website yang autoStart-nya ON (Start = ON, Stop = OFF; site lama
+  //    tanpa flag dianggap ON supaya yang sudah jalan balik lagi) nyala;
+  // 3) tunnel per website yang enabled ikut nyala setelah sitenya jalan.
+  // Semua best-effort: satu yang gagal tidak menghentikan panel.
+  autoConnectDb().catch((e) => console.log('Auto-connect database failed:', e.message));
+  setInterval(() => { autoConnectDb().catch(() => {}); }, 30000);
+  (async () => {
+    for (const site of sites) {
+      if (site.autoStart === false) continue;
+      try {
+        await doSiteStart(site);
+        site.autoStart = true; saveSites();
+      } catch (e) { console.log('Auto-start website failed (' + site.name + '): ' + e.message); continue; }
+      if (site.tunnel && site.tunnel.enabled) {
+        try { await startSiteTunnel(site); }
+        catch (e) { console.log('Auto-start site tunnel failed (' + site.name + '): ' + e.message); }
+      }
+    }
+  })().catch((e) => console.log('Auto-start websites failed:', e.message));
   console.log('Terwo running at http://' + HOST + ':' + PORT);
   console.log('Working directory: ' + ROOT);
   if (HOST === '0.0.0.0') {

@@ -27,7 +27,6 @@
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="files"><i data-lucide="folder" class="h-[19px] w-[19px]"></i><span>File Manager</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="cron"><i data-lucide="clock" class="h-[19px] w-[19px]"></i><span>Cron</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="backup"><i data-lucide="archive" class="h-[19px] w-[19px]"></i><span>Backup</span></button>
-    <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="tunnel"><i data-lucide="cloud" class="h-[19px] w-[19px]"></i><span>Tunnel</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="settings"><i data-lucide="settings" class="h-[19px] w-[19px]"></i><span>Settings</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="term"><i data-lucide="square-terminal" class="h-[19px] w-[19px]"></i><span>Terminal</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="install"><i data-lucide="store" class="h-[19px] w-[19px]"></i><span>Store</span></button>
@@ -51,7 +50,6 @@
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="files"><i data-lucide="folder" class="h-4 w-4"></i><span>Files</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="cron"><i data-lucide="clock" class="h-4 w-4"></i><span>Cron</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="backup"><i data-lucide="archive" class="h-4 w-4"></i><span>Backup</span></button>
-    <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="tunnel"><i data-lucide="cloud" class="h-4 w-4"></i><span>Tunnel</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="settings"><i data-lucide="settings" class="h-4 w-4"></i><span>Settings</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="term"><i data-lucide="square-terminal" class="h-4 w-4"></i><span>Terminal</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="install"><i data-lucide="store" class="h-4 w-4"></i><span>Store</span></button>
@@ -120,11 +118,12 @@
     </div>
     <div class="tbl-wrap">
     <table class="tbl">
-      <thead><tr><th>Name</th><th>Path</th><th>Port</th><th>Status</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Name</th><th>Path</th><th>Port</th><th>Status</th><th>Akses</th><th>Actions</th></tr></thead>
       <tbody id="site-list"></tbody>
     </table>
     </div>
     <p class="hint">Node.js: runs <code>node &lt;file&gt;</code> with the <code>PORT</code> env auto-filled. PHP: needs <code>pkg install php</code>, served via <code>php -S 127.0.0.1:PORT</code>. Static: needs python, serves a folder via <code>python3 -m http.server</code>. Go: needs Go, runs <code>go run .</code> in the project folder with the <code>PORT</code> env auto-filled.</p>
+    <p class="hint">Akses per website: <b>Stay Local</b> = hanya bisa dibuka dari HP/Termux (localhost), <b>Tunneling</b> = dapat URL publik Cloudflare (Quick tanpa akun, atau Named pakai token). Klik <b>Atur</b> di kolom Akses untuk memilih mode Quick/Named dan token.</p>
     <h3 class="mb-3 mt-7 flex items-center gap-2 text-[15px] font-semibold"><i data-lucide="repeat" class="h-[18px] w-[18px] text-accent-h"></i>Reverse Proxy (Nginx)</h3>
     <div class="card">
       <div class="frow">
@@ -179,6 +178,7 @@
       <div class="grid gap-3 lg:grid-cols-[230px_1fr]">
         <div class="card !p-4">
           <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="database" class="h-4 w-4 text-accent-h"></i>Database</h4>
+          <button id="db-create" class="btn btn-sm mb-2"><i data-lucide="plus" class="h-4 w-4"></i>Create Database</button>
           <div id="db-list"></div>
           <h4 class="mb-2 mt-4 flex items-center gap-2 text-sm font-semibold"><i data-lucide="table" class="h-4 w-4 text-accent-h"></i>Tables</h4>
           <div id="db-tables"></div>
@@ -272,10 +272,11 @@
   </section>
 
   <!-- ============ SETTINGS ============ -->
-  <!-- ============ TUNNEL (Cloudflare auto tunneling) ============ -->
-  <section id="tab-tunnel" class="tabpane">
-    <div class="mb-5"><h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><i data-lucide="cloud" class="h-5 w-5 text-accent-h"></i>Tunnel</h2></div>
-    <div class="card">
+  <section id="tab-settings" class="tabpane">
+    <div class="mb-5"><h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><i data-lucide="settings" class="h-5 w-5 text-accent-h"></i>Settings</h2></div>
+    <div class="card mb-4">
+      <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="cloud" class="h-4 w-4 text-accent-h"></i>Tunnel Panel</h4>
+      <p class="hint mb-3">Ini tunnel untuk panel Terwo ini sendiri (bukan website). Tunnel per website diatur di menu Website, kolom Akses: Stay Local / Tunneling.</p>
       <div class="frow">
         <label class="lbl-check"><input id="tun-switch" type="checkbox" class="h-4 w-4 accent-accent">Auto tunneling: aktifkan = tunnel langsung nyala, dan otomatis nyala lagi saat panel restart</label>
         <span id="tun-status" class="muted text-sm">checking…</span>
@@ -302,10 +303,6 @@
       <h4 class="mb-2 mt-4 text-sm font-semibold">Log Tunnel</h4>
       <pre id="tun-log" class="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[12.5px] text-muted">—</pre>
     </div>
-  </section>
-
-  <section id="tab-settings" class="tabpane">
-    <div class="mb-5"><h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><i data-lucide="settings" class="h-5 w-5 text-accent-h"></i>Settings</h2></div>
     <div class="card mb-4">
       <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="user" class="h-4 w-4 text-accent-h"></i>Account</h4>
       <p class="mb-3 text-sm">Active username: <b id="set-uname">…</b></p>
@@ -400,6 +397,44 @@
   <div class="w-full max-w-2xl rounded-2xl border border-border bg-surface p-5 shadow-2xl">
     <div class="mb-4 flex items-center justify-between"><span id="preview-title" class="font-semibold">Preview</span><button id="preview-close" class="btn-icon"><i data-lucide="x" class="h-4 w-4"></i></button></div>
     <img id="preview-img" class="max-h-[70vh] w-full object-contain" alt="preview">
+  </div>
+</div>
+
+<!-- modal create database -->
+<div id="db-modal" class="fixed inset-0 z-50 flex hidden items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+  <div class="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl">
+    <div class="mb-4 flex items-center justify-between"><span id="db-modal-title" class="font-semibold">Create Database</span><button id="db-modal-close" class="btn-icon"><i data-lucide="x" class="h-4 w-4"></i></button></div>
+    <div class="flex flex-col gap-3">
+      <input id="db-new-name" class="inp font-mono" placeholder="Nama database (huruf, angka, underscore)">
+      <p class="hint">Hanya huruf, angka, dan underscore; diawali huruf/underscore; maks 64 karakter.</p>
+    </div>
+    <div class="mt-4 flex justify-end"><button id="db-modal-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Create</button></div>
+    <p id="db-modal-err" class="err mt-2"></p>
+  </div>
+</div>
+
+<!-- modal tunnel per website -->
+<div id="stun-modal" class="fixed inset-0 z-50 flex hidden items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+  <div class="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl">
+    <div class="mb-4 flex items-center justify-between"><span id="stun-title" class="font-semibold">Tunnel Website</span><button id="stun-close" class="btn-icon"><i data-lucide="x" class="h-4 w-4"></i></button></div>
+    <div class="flex flex-col gap-3">
+      <label class="lbl">Mode
+        <select id="stun-mode" class="inp">
+          <option value="quick">Quick Tunnel (tanpa akun, URL acak *.trycloudflare.com)</option>
+          <option value="token">Named Tunnel (hostname tetap, pakai token Cloudflare)</option>
+        </select>
+      </label>
+      <div id="stun-token-row">
+        <label class="lbl">Tunnel token (Cloudflare Zero Trust)<input id="stun-token" class="inp font-mono" type="password" placeholder="Tempel token tunnel… (kosong = pakai token tersimpan)"></label>
+        <label class="lbl">Hostname (opsional, untuk tampilan)<input id="stun-host" class="inp" placeholder="e.g. blog.example.com"></label>
+      </div>
+      <p class="hint">Tunnel hanya jalan saat websitenya jalan. Kalau website belum jalan, tunnel dicatat aktif dan otomatis nyala saat website di-Start.</p>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button id="stun-stop" class="btn-ghost btn-sm"><i data-lucide="square" class="h-4 w-4"></i>Stay Local</button>
+      <button id="stun-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Start Tunnel</button>
+    </div>
+    <p id="stun-err" class="err mt-2"></p>
   </div>
 </div>
 

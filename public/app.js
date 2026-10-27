@@ -66,11 +66,11 @@ function badgeOff(t) { return '<span class="badge badge-off">' + dot() + esc(t) 
 function badgeWarn(t) { return '<span class="badge badge-warn">' + dot() + esc(t) + '</span>'; }
 
 // ---------- tabs (one slug per page) ----------
-const TAB_SLUGS = { dashboard: 'dashboard', web: 'website', db: 'database', files: 'files', cron: 'cron', backup: 'backup', tunnel: 'tunnel', settings: 'settings', term: 'terminal', install: 'store' };
+const TAB_SLUGS = { dashboard: 'dashboard', web: 'website', db: 'database', files: 'files', cron: 'cron', backup: 'backup', settings: 'settings', term: 'terminal', install: 'store' };
 const SLUG_TABS = {};
 for (const k of Object.keys(TAB_SLUGS)) SLUG_TABS[TAB_SLUGS[k]] = k;
-const TAB_TITLES = { dashboard: 'Dashboard', web: 'Website', db: 'Database', files: 'File Manager', cron: 'Cron', backup: 'Backup', tunnel: 'Tunnel', settings: 'Settings', term: 'Terminal', install: 'Store' };
-function tabFromPath() { return SLUG_TABS[location.pathname.replace(/^\/+|\/+$/g, '')] || 'dashboard'; }
+const TAB_TITLES = { dashboard: 'Dashboard', web: 'Website', db: 'Database', files: 'File Manager', cron: 'Cron', backup: 'Backup', settings: 'Settings', term: 'Terminal', install: 'Store' };
+function tabFromPath() { const slug = location.pathname.replace(/^\/+|\/+$/g, ''); if (slug === 'tunnel') return 'web'; return SLUG_TABS[slug] || 'dashboard'; } // link /tunnel lama dialihkan ke Website
 function showTab(id, push) {
   if (!TAB_SLUGS[id]) id = 'dashboard';
   document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === id));
@@ -79,13 +79,12 @@ function showTab(id, push) {
   document.title = TAB_TITLES[id] + ' — Terwo';
   if (id === 'install') loadInstall();
   if (id === 'db') loadDbConfig();
-  if (id === 'web') loadNginx();
+  if (id === 'web') { loadNginx(); loadSites(); }
   if (id === 'dashboard') startStats(); else stopStats();
   if (id === 'cron') loadCron();
   if (id === 'term') termTabOpen();
   if (id === 'backup') loadBackups();
-  if (id === 'tunnel') { loadTunnel(); startTunnelPoll(); } else stopTunnelPoll();
-  if (id === 'settings') loadSettings();
+  if (id === 'settings') { loadSettings(); loadTunnel(); startTunnelPoll(); } else stopTunnelPoll();
   if (push) history.pushState({ tab: id }, '', '/' + TAB_SLUGS[id]);
   refreshIcons();
 }
@@ -526,12 +525,59 @@ async function loadSites() {
     const list = (j.sites || []).filter((s) => s.type === siteType);
     for (const s of list) {
       const tr = document.createElement('tr');
+      const tun = s.tunnel || {};
+      const tunState = tun.enabled ? (tun.url ? 'on' : (s.running ? 'starting' : 'armed')) : 'off';
       tr.innerHTML =
         '<td>' + esc(s.name) + '</td>' +
         '<td class="muted font-mono text-[12.5px]">' + esc(s.path) + '</td>' +
         '<td class="muted">' + s.port + '</td>' +
         '<td>' + (s.running ? badgeOk('Running') : badgeOff('Stopped')) + '</td>' +
+        '<td><div class="akses-cell"></div></td>' +
         '<td><div class="row-actions"></div></td>';
+      // Kolom Akses: opsi eksplisit per website — Stay Local / Tunneling.
+      const akses = tr.querySelector('.akses-cell');
+      const seg = document.createElement('div');
+      seg.className = 'flex flex-wrap items-center gap-1';
+      const segBtn = (label, active, fn) => {
+        const b = document.createElement('button');
+        b.className = active ? 'btn btn-sm' : 'btn-ghost btn-sm';
+        b.textContent = label;
+        b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
+        seg.appendChild(b);
+      };
+      segBtn('Stay Local', tunState === 'off', async () => {
+        await api('/api/sites/' + s.id + '/tunnel/stop', { method: 'POST' }).catch(() => {});
+        loadSites();
+      });
+      segBtn('Tunneling', tunState !== 'off', async () => {
+        if (s.tunnel && s.tunnel.mode) {
+          await api('/api/sites/' + s.id + '/tunnel/start', { method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: s.tunnel.mode, token: '', hostname: '' }) }).catch(() => {});
+          loadSites();
+        } else openSiteTunnelModal(s);
+      });
+      const atur = document.createElement('button');
+      atur.className = 'btn-ghost btn-sm';
+      atur.textContent = 'Atur';
+      atur.title = 'Atur mode Quick/Named + token tunnel';
+      atur.addEventListener('click', (ev) => { ev.stopPropagation(); openSiteTunnelModal(s); });
+      seg.appendChild(atur);
+      akses.appendChild(seg);
+      if (tun.url) {
+        const a = document.createElement('a');
+        a.className = 'mt-1 block font-mono text-[12.5px] text-accent-h underline';
+        a.target = '_blank'; a.rel = 'noopener'; a.href = tun.url; a.textContent = tun.url;
+        akses.appendChild(a);
+      } else if (tunState === 'starting') {
+        const sp = document.createElement('span');
+        sp.className = 'muted text-sm'; sp.textContent = 'Tunnel starting…';
+        akses.appendChild(sp);
+      } else if (tunState === 'armed') {
+        const sp = document.createElement('span');
+        sp.className = 'muted text-sm'; sp.textContent = 'Tunnel armed (nyala saat website jalan)';
+        akses.appendChild(sp);
+      }
       const acts = tr.querySelector('.row-actions');
       const mk = (icn, fn, title, danger) => {
         const b = document.createElement('button');
@@ -547,7 +593,7 @@ async function loadSites() {
       el.appendChild(tr);
     }
     if (!list.length) {
-      el.innerHTML = '<tr><td colspan="5" class="muted">No ' + esc(siteType) + ' websites yet</td></tr>';
+      el.innerHTML = '<tr><td colspan="6" class="muted">No ' + esc(siteType) + ' websites yet</td></tr>';
     }
     refreshIcons();
   } catch { /* ignore */ }
@@ -576,6 +622,46 @@ async function showLogs(s) {
   }
 }
 
+// ---------- tunnel per website ----------
+let curTunnelSite = null;
+const stunModal = document.getElementById('stun-modal');
+function openSiteTunnelModal(s) {
+  curTunnelSite = s;
+  document.getElementById('stun-title').textContent = 'Tunnel: ' + s.name + ' (port ' + s.port + ')';
+  const tun = s.tunnel || {};
+  document.getElementById('stun-mode').value = tun.mode || 'quick';
+  document.getElementById('stun-token-row').style.display = ((tun.mode || 'quick') === 'token') ? '' : 'none';
+  document.getElementById('stun-token').value = '';
+  document.getElementById('stun-host').value = tun.hostname || '';
+  document.getElementById('stun-err').textContent = '';
+  stunModal.classList.remove('hidden');
+  refreshIcons();
+}
+function closeSiteTunnelModal() { stunModal.classList.add('hidden'); curTunnelSite = null; }
+document.getElementById('stun-close').addEventListener('click', closeSiteTunnelModal);
+stunModal.addEventListener('click', (e) => { if (e.target === stunModal) closeSiteTunnelModal(); });
+document.getElementById('stun-mode').addEventListener('change', (e) => {
+  document.getElementById('stun-token-row').style.display = (e.target.value === 'token') ? '' : 'none';
+});
+document.getElementById('stun-save').addEventListener('click', async () => {
+  if (!curTunnelSite) return;
+  const err = document.getElementById('stun-err');
+  err.textContent = '';
+  const r = await api('/api/sites/' + curTunnelSite.id + '/tunnel/start', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: document.getElementById('stun-mode').value,
+      token: document.getElementById('stun-token').value.trim(),
+      hostname: document.getElementById('stun-host').value.trim() }),
+  });
+  const jj = await r.json();
+  if (jj.ok) { closeSiteTunnelModal(); loadSites(); }
+  else err.textContent = jj.error || 'Failed';
+});
+document.getElementById('stun-stop').addEventListener('click', async () => {
+  if (!curTunnelSite) return;
+  await api('/api/sites/' + curTunnelSite.id + '/tunnel/stop', { method: 'POST' }).catch(() => {});
+  closeSiteTunnelModal(); loadSites();
+});
 // ---------- nginx reverse proxy ----------
 async function loadNginx() {
   try {
@@ -782,6 +868,35 @@ async function loadDbList() {
     }
   } catch { /* ignore */ }
 }
+// ---------- create database (modal) ----------
+const dbModal = document.getElementById('db-modal');
+function openDbModal() {
+  document.getElementById('db-modal-title').textContent = 'Create Database (' + dbType + ')';
+  document.getElementById('db-new-name').value = '';
+  document.getElementById('db-modal-err').textContent = '';
+  dbModal.classList.remove('hidden');
+  document.getElementById('db-new-name').focus();
+  refreshIcons();
+}
+function closeDbModal() { dbModal.classList.add('hidden'); }
+document.getElementById('db-create').addEventListener('click', openDbModal);
+document.getElementById('db-modal-close').addEventListener('click', closeDbModal);
+dbModal.addEventListener('click', (e) => { if (e.target === dbModal) closeDbModal(); });
+async function saveDbModal() {
+  const err = document.getElementById('db-modal-err');
+  err.textContent = '';
+  const name = document.getElementById('db-new-name').value.trim();
+  if (!name) { err.textContent = 'Nama database wajib diisi'; return; }
+  const r = await api('/api/db/' + dbType + '/databases', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const j = await r.json();
+  if (j.ok) { closeDbModal(); loadDbList(); }
+  else err.textContent = j.error || 'Failed';
+}
+document.getElementById('db-modal-save').addEventListener('click', saveDbModal);
+document.getElementById('db-new-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveDbModal(); });
 async function loadDbTables(db) {
   try {
     const j = await (await api('/api/db/' + dbType + '/tables?db=' + encodeURIComponent(db))).json();
