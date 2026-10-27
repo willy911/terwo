@@ -1,4 +1,4 @@
-# Terwo v1.18.1
+# Terwo v1.18.2
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -126,6 +126,8 @@ PANEL_PORT=9000 node panel.js
   Parser agent toleran terhadap router non-standar: JSON, JSON berbungkus
   `data`, maupun SSE (termasuk tool_call terpecah per delta); bila tetap
   tidak bisa diurai, pesan error menampilkan cuplikan balasan upstream.
+  Parser juga mengambil objek JSON pertama yang lengkap bila ada trailer
+  SSE `data: [DONE]` yang menempel di belakang JSON chat completion.
 - **AI Chat (ala opencode CLI)** — menu AI dengan chat streaming ke endpoint
   OpenAI-compatible: Settings AI berisi endpoint, API key, tombol Fetch
   Models (GET /v1/models), select model + ketik manual, dan Save. Key

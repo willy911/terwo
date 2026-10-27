@@ -1075,6 +1075,31 @@ function aiToolDefs() {
   ];
 }
 function aiSse(res, obj) { try { res.write('data: ' + JSON.stringify(obj) + '\n\n'); } catch {} }
+// Ambil objek JSON pertama yang lengkap dari teks, mengabaikan apa pun yang
+// menempel setelahnya (mis. trailer SSE "data: [DONE]" yang ditempel 9Router
+// di belakang JSON chat completion — pola yang membuat JSON.parse gagal
+// padahal JSON-nya sendiri valid).
+function aiFirstJsonValue(text) {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; }
+      }
+    }
+  }
+  return null;
+}
 async function aiCallAgentUpstream(cfg, messages) {
   const r = await fetch(aiNormBase(cfg.endpoint) + '/chat/completions', {
     method: 'POST',
@@ -1087,14 +1112,32 @@ async function aiCallAgentUpstream(cfg, messages) {
   // JSON berbungkus {"data": ...}, atau SSE padahal stream:false — semuanya
   // harus bisa diurai, bukan langsung gagal "bukan JSON".
   const clean = txt.replace(/^\uFEFF/, '').trim();
-  try {
-    const j = JSON.parse(clean);
-    const d = j.data || j;
+  const msgFrom = (d) => {
+    if (!d) return null;
     if (d.error) throw new Error('Upstream error: ' + JSON.stringify(d.error).slice(0, 300));
-    const msg = (d.choices && d.choices[0] && d.choices[0].message) || null;
+    const ch = d.choices && d.choices[0];
+    if (!ch) return null;
+    if (ch.message) return ch.message;
+    // JSON utuh tapi berisi delta (bukan message): rakit jadi satu pesan.
+    if (ch.delta) {
+      const msg = { role: 'assistant', content: ch.delta.content || null };
+      if (ch.delta.tool_calls) msg.tool_calls = ch.delta.tool_calls;
+      return msg;
+    }
+    return null;
+  };
+  try {
+    const msg = msgFrom(JSON.parse(clean).data || JSON.parse(clean));
     if (msg) return msg;
   } catch (e) {
     if (e.message && e.message.startsWith('Upstream error:')) throw e;
+    // JSON.parse gagal: kemungkinan ada trailer SSE / teks tambahan setelah
+    // JSON-nya — ambil objek JSON pertama yang lengkap dan abaikan sisanya.
+    const j = aiFirstJsonValue(clean);
+    if (j) {
+      const msg = msgFrom(j.data || j);
+      if (msg) return msg;
+    }
     // Lanjut ke parsing SSE di bawah; bila itu pun gagal, error akhir
     // menyertakan cuplikan balasan upstream agar bisa didiagnosis.
   }
@@ -1107,7 +1150,8 @@ async function aiCallAgentUpstream(cfg, messages) {
       const payload = line.slice(5).trim();
       if (!payload || payload === '[DONE]') continue;
       let pj;
-      try { pj = JSON.parse(payload); } catch { continue; }
+      try { pj = JSON.parse(payload); } catch { pj = aiFirstJsonValue(payload); }
+      if (!pj) continue;
       const d = pj.data || pj;
       if (d.error) throw new Error('Upstream error: ' + JSON.stringify(d.error).slice(0, 300));
       const ch = d.choices && d.choices[0];
