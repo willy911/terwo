@@ -2343,6 +2343,14 @@ async function apiPmaConfig(req, res) {
 // dan site auto-start. Stop tunnel lewat API (persist=true) yang mematikan
 // flag enabled-nya.
 const siteTunnels = new Map(); // siteId -> { proc, url, logs[], startedAt, stopping, restartTimer }
+// Log terakhir tunnel yang sudah mati (gagal start / berhenti) — dipertahankan
+// supaya penyebabnya tetap bisa dibaca, tidak ikut musnah bersama record-nya.
+// Dihapus saat tunnel situs itu di-start ulang (log baru menggantikan).
+const siteTunnelDeadLogs = new Map(); // siteId -> logs string
+function siteTunnelSaveDead(id) {
+  const r = siteTunnels.get(id);
+  if (r) siteTunnelDeadLogs.set(id, r.logs.join(''));
+}
 function siteTunnelRunning(id) { return siteTunnels.has(id); }
 function siteTunnelUrl(id) { const r = siteTunnels.get(id); return r ? r.url : ''; }
 function siteTunnelPublic(site) {
@@ -2375,6 +2383,7 @@ async function startSiteTunnel(site) {
   const child = spawn('cloudflared', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const rec = { proc: child, url: '', logs: [], startedAt: Date.now(), stopping: false, restartTimer: null };
   siteTunnels.set(site.id, rec);
+  siteTunnelDeadLogs.delete(site.id);
   let buf = '';
   const onData = (d) => {
     buf += d.toString('utf8');
@@ -2392,11 +2401,13 @@ async function startSiteTunnel(site) {
   child.stderr.on('data', onData);
   child.on('error', (e) => {
     siteTunnelPushLog(site.id, '--- site tunnel failed to start: ' + e.message + ' ---\n');
+    siteTunnelSaveDead(site.id);
     siteTunnels.delete(site.id);
   });
   child.on('exit', (code) => {
     siteTunnelPushLog(site.id, '--- site tunnel stopped (exit ' + code + ') ---\n');
     const wasStopping = rec.stopping;
+    siteTunnelSaveDead(site.id);
     siteTunnels.delete(site.id);
     // Auto-reconnect: hanya bila tunnel masih enabled DAN sitenya masih jalan.
     const cur = siteById(site.id);
@@ -2417,6 +2428,7 @@ function stopSiteTunnel(id, persist) {
     r.stopping = true;
     if (r.restartTimer) clearTimeout(r.restartTimer);
     try { r.proc.kill(); } catch {}
+    siteTunnelSaveDead(id);
     siteTunnels.delete(id);
   }
   if (persist) {
@@ -2449,6 +2461,15 @@ function apiSiteTunnelStop(res, id) {
   if (!site) throw new Error('Website not found');
   stopSiteTunnel(id, true);
   sendJson(res, 200, { ok: true, tunnel: siteTunnelPublic(site) });
+}
+async function apiSiteTunnelLogs(res, id) {
+  const site = siteById(id);
+  if (!site) throw new Error('Website not found');
+  const r = siteTunnels.get(id);
+  // Live bila proses jalan; bila tidak, tampilkan log terakhir yang tersimpan
+  // (tunnel gagal start / sudah berhenti tetap bisa didiagnosis).
+  const logs = r ? r.logs.join('').slice(-4000) : (siteTunnelDeadLogs.get(id) || '').slice(-4000);
+  sendJson(res, 200, { ok: true, running: !!r, enabled: !!(site.tunnel && site.tunnel.enabled), logs });
 }
 function apiTunnelsList(res) {
   sendJson(res, 200, { panel: tunnelPublic(),
@@ -2544,6 +2565,8 @@ async function handleRequest(req, res) {
       if (stm[2] === 'start' && req.method === 'POST') return apiSiteTunnelStart(req, res, stm[1]);
       if (stm[2] === 'stop' && req.method === 'POST') return apiSiteTunnelStop(res, stm[1]);
     }
+    const stl = p.match(/^\/api\/sites\/([0-9a-f]{16})\/tunnel\/logs$/);
+    if (stl && req.method === 'GET') return apiSiteTunnelLogs(res, stl[1]);
     if (p === '/api/tunnels' && req.method === 'GET') return apiTunnelsList(res);
     const sm = p.match(/^\/api\/sites\/([0-9a-f]{16})\/(start|stop|restart|delete|logs)$/);
     if (sm) {

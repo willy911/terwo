@@ -626,8 +626,20 @@ async function showLogs(s) {
 // ---------- tunnel per website ----------
 let curTunnelSite = null;
 const stunModal = document.getElementById('stun-modal');
+let stunLogTimer = null;
+async function refreshStunLog() {
+  if (!curTunnelSite) return;
+  try {
+    const j = await (await api('/api/sites/' + curTunnelSite.id + '/tunnel/logs')).json();
+    const el = document.getElementById('stun-log');
+    if (el) el.textContent = j.logs || 'Belum ada log tunnel.';
+  } catch { /* ignore */ }
+}
 function openSiteTunnelModal(s) {
   curTunnelSite = s;
+  refreshStunLog();
+  if (stunLogTimer) clearInterval(stunLogTimer);
+  stunLogTimer = setInterval(refreshStunLog, 3000);
   document.getElementById('stun-title').textContent = 'Tunnel: ' + s.name + ' (port ' + s.port + ')';
   const tun = s.tunnel || {};
   document.getElementById('stun-mode').value = tun.mode || 'quick';
@@ -638,7 +650,7 @@ function openSiteTunnelModal(s) {
   stunModal.classList.remove('hidden');
   refreshIcons();
 }
-function closeSiteTunnelModal() { stunModal.classList.add('hidden'); curTunnelSite = null; }
+function closeSiteTunnelModal() { stunModal.classList.add('hidden'); curTunnelSite = null; if (stunLogTimer) { clearInterval(stunLogTimer); stunLogTimer = null; } }
 document.getElementById('stun-close').addEventListener('click', closeSiteTunnelModal);
 stunModal.addEventListener('click', (e) => { if (e.target === stunModal) closeSiteTunnelModal(); });
 document.getElementById('stun-mode').addEventListener('change', (e) => {

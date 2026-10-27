@@ -1,4 +1,4 @@
-# Terwo v1.19.0
+# Terwo v1.19.1
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -177,6 +177,7 @@ PANEL_PORT=9000 node panel.js
 - **System info** — hostname, uptime, memory, load average.
 
 ### Website menu
+- Tunnel per website: modal Atur kini menampilkan log `cloudflared` (refresh tiap 3 detik selama modal dibuka) — termasuk log terakhir setelah tunnel mati, jadi penyebab gagal start tetap bisa dibaca.
 
 The **🌐 Website** tab has four sub-tabs:
 
