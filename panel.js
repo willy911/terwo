@@ -2356,8 +2356,13 @@ function loadCfCfg() {
     return { apiToken: String(c.apiToken || ''), accountId: String(c.accountId || ''),
       zoneId: String(c.zoneId || ''), domain: String(c.domain || ''),
       tunnelId: String(c.tunnelId || ''), tunnelToken: String(c.tunnelToken || ''),
-      tunnelName: String(c.tunnelName || 'terwo') };
-  } catch { return { apiToken: '', accountId: '', zoneId: '', domain: '', tunnelId: '', tunnelToken: '', tunnelName: 'terwo' }; }
+      tunnelName: String(c.tunnelName || 'terwo'),
+      // panelDomain WAJIB ikut dimuat: kalau tidak, restart panel akan
+      // menghilangkan domain panel yang aktif (runner tak ikut nyala lagi).
+      panelDomain: (c.panelDomain && typeof c.panelDomain === 'object')
+        ? { enabled: !!c.panelDomain.enabled, hostname: String(c.panelDomain.hostname || '') }
+        : { enabled: false, hostname: '' } };
+  } catch { return { apiToken: '', accountId: '', zoneId: '', domain: '', tunnelId: '', tunnelToken: '', tunnelName: 'terwo', panelDomain: { enabled: false, hostname: '' } }; }
 }
 function saveCfCfg() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -2557,6 +2562,122 @@ async function apiCfRemoveDomain(req, res, id) {
   site.tunnel = { enabled: false, mode: 'auto', hostname: '', token: '' };
   saveSites();
   sendJson(res, 200, { ok: true, tunnel: siteTunnelPublic(site) });
+}
+
+// ================= Domain Panel Otomatis (v1.20.4) =================
+// Panel Terwo sendiri bisa punya domain (mis. panel.flaznexa.cloud) TANPA
+// buka dashboard Cloudflare: memakai konfigurasi Domain Otomatis yang sama
+// (token + akun + zone + domain di Settings) dan tunnel bersama yang sama.
+// Bedanya dengan tunnel panel Named: routing di sini diatur Terwo lewat API
+// (ingress + DNS CNAME), bukan manual di dashboard Zero Trust. Runner-nya
+// proses cloudflared sendiri untuk tunnel bersama — boleh jalan berdampingan
+// dengan runner site auto (satu tunnel boleh punya beberapa connector).
+// Nonaktifkan sengaja MENGHAPUS route + DNS (beda dengan site: Stop site
+// mempertahankan route) supaya halaman login panel tidak menggantung publik.
+let panelDomainProc = null, panelDomainStopping = false, panelDomainRestartTimer = null;
+function panelDomainCfg() {
+  const c = cfCfg.panelDomain;
+  return (c && typeof c === 'object') ? c : { enabled: false, hostname: '' };
+}
+function panelDomainPublic() {
+  const c = panelDomainCfg();
+  return { enabled: !!c.enabled, hostname: c.hostname || '',
+    running: !!panelDomainProc, url: (c.enabled && c.hostname) ? 'https://' + c.hostname : '' };
+}
+async function startPanelDomainRunner() {
+  if (panelDomainProc) return;
+  await mustBin('cloudflared', 'cloudflared is not installed. Install it first via the Store menu.');
+  const token = String(cfCfg.tunnelToken || '').trim();
+  if (!token) throw new Error('Tunnel otomatis belum siap — isi konfigurasi Cloudflare di Settings, lalu Setup & Uji, kemudian aktifkan lagi domain panel ini');
+  panelDomainStopping = false;
+  if (panelDomainRestartTimer) { clearTimeout(panelDomainRestartTimer); panelDomainRestartTimer = null; }
+  const child = spawn('cloudflared', ['tunnel', '--no-autoupdate', 'run', '--token', token],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  panelDomainProc = child;
+  child.on('error', (e) => {
+    console.log('Panel domain runner failed:', e.message);
+    panelDomainProc = null;
+  });
+  child.on('exit', () => {
+    panelDomainProc = null;
+    // Auto-reconnect selama domain panel masih aktif (bukan stop manual).
+    if (!panelDomainStopping && panelDomainCfg().enabled && !panelDomainRestartTimer) {
+      panelDomainRestartTimer = setTimeout(() => {
+        panelDomainRestartTimer = null;
+        if (panelDomainCfg().enabled && !panelDomainProc) {
+          startPanelDomainRunner().catch((e) => console.log('Panel domain auto-restart failed:', e.message));
+        }
+      }, 5000);
+    }
+  });
+}
+function stopPanelDomainRunner() {
+  panelDomainStopping = true;
+  if (panelDomainRestartTimer) { clearTimeout(panelDomainRestartTimer); panelDomainRestartTimer = null; }
+  if (panelDomainProc) { try { panelDomainProc.kill(); } catch {} panelDomainProc = null; }
+}
+async function cfPublishPanelDomain(hostnameInput) {
+  if (!cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId || !cfCfg.domain) {
+    throw new Error('Konfigurasi Cloudflare belum lengkap — isi API token, Account ID, Zone ID, dan domain di Settings dulu, lalu Setup & Uji');
+  }
+  const hostname = cfNormalizeHostname(hostnameInput, cfCfg.domain);
+  cfValidateHostname(hostname, cfCfg.domain);
+  const clash = sites.find((s) => s.tunnel && s.tunnel.hostname === hostname);
+  if (clash) throw new Error('Hostname ' + hostname + ' sudah dipakai website ' + clash.name + ' — pakai subdomain lain untuk panel');
+  await cfEnsureTunnel();
+  const { config, ingress } = await cfGetIngress();
+  const orig = ingress.slice();
+  const catchAll = ingress.find((r) => !r.hostname) || { service: 'http_status:404' };
+  const rules = ingress.filter((r) => r.hostname && r.hostname !== hostname);
+  rules.push({ hostname, service: 'http://127.0.0.1:' + PORT });
+  rules.push(catchAll);
+  await cfPutIngress(rules, config);
+  try { await cfUpsertDns(hostname); }
+  catch (e) {
+    try { await cfPutIngress(orig.length ? orig : [{ service: 'http_status:404' }], config); } catch {}
+    throw new Error('DNS Cloudflare gagal (' + e.message + ') — route dibatalkan');
+  }
+  return hostname;
+}
+async function cfUnpublishPanelDomain(hostname) {
+  if (!hostname || !cfCfg.tunnelId || !cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId) return;
+  try {
+    const { config, ingress } = await cfGetIngress();
+    const kept = ingress.filter((r) => r.hostname !== hostname);
+    if (!kept.some((r) => !r.hostname)) kept.push({ service: 'http_status:404' });
+    await cfPutIngress(kept, config);
+  } catch (e) { console.log('CF unpublish panel route failed:', e.message); }
+  try {
+    const list = await cfApi('GET', '/zones/' + cfCfg.zoneId + '/dns_records?type=CNAME&name=' + encodeURIComponent(hostname));
+    for (const rec of (Array.isArray(list) ? list : [])) {
+      try { await cfApi('DELETE', '/zones/' + cfCfg.zoneId + '/dns_records/' + rec.id); } catch {}
+    }
+  } catch (e) { console.log('CF unpublish panel DNS failed:', e.message); }
+}
+function apiPanelDomainGet(res) { sendJson(res, 200, Object.assign({ ok: true }, panelDomainPublic())); }
+async function apiPanelDomainSet(req, res) {
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  if (b.enabled) {
+    // Publikasikan dulu SEBELUM enabled disimpan, supaya gagal API tidak
+    // meninggalkan domain panel dalam keadaan "aktif" palsu.
+    const hostname = await cfPublishPanelDomain(b.subdomain || b.hostname || 'panel');
+    cfCfg.panelDomain = { enabled: true, hostname }; saveCfCfg();
+    try { await startPanelDomainRunner(); }
+    catch (e) {
+      // Runner gagal nyala (mis. cloudflared belum terinstal): batalkan
+      // total supaya tidak ada route publik tanpa connector.
+      await cfUnpublishPanelDomain(hostname);
+      cfCfg.panelDomain = { enabled: false, hostname: '' }; saveCfCfg();
+      throw e;
+    }
+    sendJson(res, 200, Object.assign({ ok: true }, panelDomainPublic()));
+  } else {
+    const c = panelDomainCfg();
+    stopPanelDomainRunner();
+    if (c.hostname) await cfUnpublishPanelDomain(c.hostname);
+    cfCfg.panelDomain = { enabled: false, hostname: '' }; saveCfCfg();
+    sendJson(res, 200, Object.assign({ ok: true }, panelDomainPublic()));
+  }
 }
 
 // ================= Cloudflare Tunnel per website =================
@@ -2809,6 +2930,8 @@ async function handleRequest(req, res) {
     if (p === '/api/cloudflare' && req.method === 'GET') return apiCfGet(res);
     if (p === '/api/cloudflare/config' && req.method === 'POST') return apiCfConfig(req, res);
     if (p === '/api/cloudflare/setup' && req.method === 'POST') return apiCfSetup(req, res);
+    if (p === '/api/panel-domain' && req.method === 'GET') return apiPanelDomainGet(res);
+    if (p === '/api/panel-domain' && req.method === 'POST') return apiPanelDomainSet(req, res);
     if (p === '/api/tunnels' && req.method === 'GET') return apiTunnelsList(res);
     const sm = p.match(/^\/api\/sites\/([0-9a-f]{16})\/(start|stop|restart|delete|logs)$/);
     if (sm) {
@@ -2981,6 +3104,10 @@ server.listen(PORT, HOST, () => {
   // Auto tunneling: saklar yang masih ON sebelum restart langsung jalan lagi.
   if (tunnelCfg.enabled) {
     startTunnel(tunnelCfg).catch((e) => console.log('Auto tunnel failed:', e.message));
+  }
+  // Domain panel yang masih aktif sebelum restart ikut nyala lagi.
+  if (panelDomainCfg().enabled && panelDomainCfg().hostname) {
+    startPanelDomainRunner().catch((e) => console.log('Auto-start panel domain failed:', e.message));
   }
   // Auto-start semuanya saat panel dijalankan (pm2 start terwo):
   // 1) database yang config-nya pernah disimpan langsung connect,

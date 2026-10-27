@@ -86,7 +86,7 @@ function showTab(id, push) {
   if (id === 'term') termTabOpen();
   if (id === 'backup') loadBackups();
   if (id === 'settings') { loadSettings(); loadCf(); }
-  if (id === 'tunnel') { tunModeSynced = false; loadTunnel(); startTunnelPoll(); } else stopTunnelPoll();
+  if (id === 'tunnel') { tunModeSynced = false; loadTunnel(); loadPanelDomain(); startTunnelPoll(); } else stopTunnelPoll();
   if (push) history.pushState({ tab: id }, '', '/' + TAB_SLUGS[id]);
   refreshIcons();
 }
@@ -1429,7 +1429,7 @@ document.getElementById('cf-setup').addEventListener('click', async () => {
 let tunnelTimer = null;
 let tunModeSynced = false;
 let tunLastServerMode = null;
-function startTunnelPoll() { stopTunnelPoll(); tunnelTimer = setInterval(loadTunnel, 5000); }
+function startTunnelPoll() { stopTunnelPoll(); tunnelTimer = setInterval(() => { loadTunnel(); loadPanelDomain(); }, 5000); }
 function stopTunnelPoll() { if (tunnelTimer) { clearInterval(tunnelTimer); tunnelTimer = null; } }
 async function loadTunnel() {
   try {
@@ -1487,6 +1487,44 @@ document.getElementById('tun-copy').addEventListener('click', async () => {
     const t = document.createElement('textarea'); t.value = u; document.body.appendChild(t);
     t.select(); document.execCommand('copy'); t.remove();
   }
+});
+
+// ---------- domain panel otomatis ----------
+let pdEnabled = false;
+async function loadPanelDomain() {
+  try {
+    const j = await (await api('/api/panel-domain')).json();
+    pdEnabled = !!j.enabled;
+    const st = document.getElementById('pd-status');
+    st.innerHTML = !j.enabled ? badgeOff('Domain panel nonaktif')
+      : (j.running ? badgeOk('Domain panel aktif') : badgeWarn('Domain panel aktif, connector belum jalan'));
+    const linkEl = document.getElementById('pd-link');
+    linkEl.innerHTML = (j.enabled && j.hostname)
+      ? '<a class="font-mono text-[13px] text-accent-h underline" target="_blank" rel="noopener" href="https://' + esc(j.hostname) + '">https://' + esc(j.hostname) + '</a>'
+      : '<span class="muted text-sm">Belum ada domain panel</span>';
+    const subEl = document.getElementById('pd-subdomain');
+    if (j.hostname && document.activeElement !== subEl) {
+      const dot = j.hostname.indexOf('.');
+      subEl.value = dot > 0 ? j.hostname.slice(0, dot) : j.hostname;
+    }
+    document.getElementById('pd-toggle').textContent = j.enabled ? 'Nonaktifkan Domain Panel' : 'Aktifkan Domain Panel';
+    refreshIcons();
+  } catch { /* ignore */ }
+}
+document.getElementById('pd-toggle').addEventListener('click', async () => {
+  const err = document.getElementById('pd-err'); err.textContent = '';
+  if (pdEnabled) {
+    if (!confirm('Nonaktifkan domain panel? Route + DNS-nya akan dihapus dari Cloudflare.')) return;
+    const r = await api('/api/panel-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    const j = await r.json();
+    if (!j.ok && j.error) err.textContent = j.error;
+  } else {
+    const sub = document.getElementById('pd-subdomain').value.trim();
+    const r = await api('/api/panel-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, subdomain: sub }) });
+    const j = await r.json();
+    if (!j.ok && j.error) err.textContent = j.error;
+  }
+  loadPanelDomain();
 });
 
 // ---------- backup ----------

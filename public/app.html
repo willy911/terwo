@@ -380,6 +380,20 @@
       <h4 class="mb-2 mt-4 text-sm font-semibold">Log Tunnel</h4>
       <pre id="tun-log" class="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[12.5px] text-muted">—</pre>
     </div>
+    <div class="card mb-4">
+      <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="globe" class="h-4 w-4 text-accent-h"></i>Domain untuk Panel (Cloudflare API)</h4>
+      <p class="hint mb-3">Panel ini sendiri punya domain (mis. panel.flaznexa.cloud) tanpa buka dashboard Cloudflare — memakai konfigurasi Domain Otomatis di Settings dan tunnel bersama yang sama. Nonaktifkan menghapus route + DNS-nya.</p>
+      <div class="frow">
+        <label class="lbl">Subdomain panel<input id="pd-subdomain" class="inp" placeholder="panel"></label>
+        <span id="pd-status" class="muted text-sm">checking…</span>
+      </div>
+      <div class="frow">
+        <span id="pd-link"></span>
+        <button id="pd-toggle" class="btn btn-sm">Aktifkan Domain Panel</button>
+        <span id="pd-err" class="err"></span>
+      </div>
+      <p class="hint">Syarat: Domain Otomatis di Settings sudah Setup &amp; Uji (Siap). Perhatian: domain ini membuka halaman login panel ke internet publik; pastikan password panel kuat sebelum mengaktifkan.</p>
+    </div>
   </section>
 
   <!-- ============ SETTINGS ============ -->
