@@ -528,7 +528,10 @@ async function loadSites() {
     for (const s of list) {
       const tr = document.createElement('tr');
       const tun = s.tunnel || {};
-      const tunState = tun.enabled ? (tun.url ? 'on' : (s.running ? 'starting' : 'armed')) : 'off';
+      // Named (token) tidak pernah mencetak URL trycloudflare di log cloudflared,
+      // jadi url selalu kosong untuk mode itu — hostname-lah alamat publiknya.
+      const tunHasAddr = !!(tun.url || ((tun.mode === 'auto' || tun.mode === 'token') && tun.hostname));
+      const tunState = tun.enabled ? (tunHasAddr ? 'on' : (s.running ? 'starting' : 'armed')) : 'off';
       tr.innerHTML =
         '<td>' + esc(s.name) + '</td>' +
         '<td class="muted font-mono text-[12.5px]">' + esc(s.path) + '</td>' +
@@ -571,7 +574,7 @@ async function loadSites() {
         a.className = 'mt-1 block font-mono text-[12.5px] text-accent-h underline';
         a.target = '_blank'; a.rel = 'noopener'; a.href = tun.url; a.textContent = tun.url;
         akses.appendChild(a);
-      } else if (tun.mode === 'auto' && tun.hostname) {
+      } else if ((tun.mode === 'auto' || tun.mode === 'token') && tun.hostname) {
         const a = document.createElement('a');
         a.className = 'mt-1 block font-mono text-[12.5px] text-accent-h underline';
         a.target = '_blank'; a.rel = 'noopener'; a.href = 'https://' + tun.hostname; a.textContent = 'https://' + tun.hostname;
@@ -583,7 +586,13 @@ async function loadSites() {
         }
       } else if (tunState === 'starting') {
         const sp = document.createElement('span');
-        sp.className = 'muted text-sm'; sp.textContent = 'Tunnel starting…';
+        sp.className = 'muted text-sm';
+        // Token-mode tanpa hostname: proses cloudflared jalan, tapi panel tidak
+        // tahu domainnya (domain hanya ada di dashboard Cloudflare) — jangan
+        // tulis 'starting' selamanya; katakan sejujurnya.
+        sp.textContent = (tun.mode === 'token' && tun.running)
+          ? 'Tunnel Named jalan — domain diatur di dashboard Cloudflare'
+          : 'Tunnel starting…';
         akses.appendChild(sp);
       } else if (tunState === 'armed') {
         const sp = document.createElement('span');
