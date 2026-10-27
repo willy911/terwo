@@ -3,7 +3,7 @@
 # Terwo — one-line installer
 #
 # Usage (in Termux):
-#   curl -sL https://raw.githubusercontent.com/elkom14a/terwo/main/install.sh | bash
+#   curl -sL https://raw.githubusercontent.com/willy911/terwo/main/install.sh | bash
 #
 # After install, the panel runs in the background via PM2
 # (like aaPanel) — no need to keep a terminal open.
@@ -13,7 +13,7 @@
 # ============================================================
 set -e
 
-GITHUB_USER="elkom14a"
+GITHUB_USER="willy911"
 REPO_URL="${PANEL_REPO_URL:-https://github.com/${GITHUB_USER}/terwo.git}"
 TARGET_DIR="${PANEL_DIR:-$HOME/terwo}"
 APP_NAME="terwo"
@@ -38,6 +38,13 @@ fi
 echo "[2/5] Downloading panel from GitHub..."
 if [ -d "$TARGET_DIR/.git" ]; then
   echo "      Folder exists, updating to latest version..."
+  # Instalasi lama dari upstream (elkom14a) dimigrasikan ke fork ini,
+  # supaya pull berikutnya menarik dari willy911, bukan upstream lagi.
+  # Remote lain yang sengaja diubah user tidak disentuh.
+  CURRENT_REMOTE=$(git -C "$TARGET_DIR" remote get-url origin 2>/dev/null || true)
+  case "$CURRENT_REMOTE" in
+    *elkom14a*) git -C "$TARGET_DIR" remote set-url origin "$REPO_URL" ;;
+  esac
   git -C "$TARGET_DIR" pull --ff-only || true
 elif [ -d "$TARGET_DIR" ]; then
   echo "      Folder $TARGET_DIR exists (not a git repo), using it as-is."

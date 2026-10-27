@@ -34,7 +34,7 @@ npm run build:css
 
 **One line:**
 ```bash
-curl -sL https://raw.githubusercontent.com/elkom14a/terwo/main/install.sh | bash
+curl -sL https://raw.githubusercontent.com/willy911/terwo/main/install.sh | bash
 ```
 The installer automatically: checks Node.js → clones the repo → `npm install` →
 installs **PM2** → the panel **starts running in the background right away**
@@ -260,7 +260,7 @@ back automatically.)
 
 ## Update from GitHub
 
-Official repo: **https://github.com/elkom14a/terwo**. To update to the latest version:
+Fork repo: **https://github.com/willy911/terwo** (fork dari https://github.com/elkom14a/terwo). To update to the latest version:
 
 ```bash
 cd ~/terwo
