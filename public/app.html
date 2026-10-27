@@ -24,6 +24,7 @@
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text active" data-tab="dashboard"><i data-lucide="layout-dashboard" class="h-[19px] w-[19px]"></i><span>Dashboard</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="web"><i data-lucide="globe" class="h-[19px] w-[19px]"></i><span>Website</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="db"><i data-lucide="database" class="h-[19px] w-[19px]"></i><span>Database</span></button>
+    <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="ai"><i data-lucide="sparkles" class="h-[19px] w-[19px]"></i><span>AI Chat</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="files"><i data-lucide="folder" class="h-[19px] w-[19px]"></i><span>File Manager</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="cron"><i data-lucide="clock" class="h-[19px] w-[19px]"></i><span>Cron</span></button>
     <button class="tab flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition hover:bg-border/50 hover:text-text" data-tab="backup"><i data-lucide="archive" class="h-[19px] w-[19px]"></i><span>Backup</span></button>
@@ -47,6 +48,7 @@
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted active" data-tab="dashboard"><i data-lucide="layout-dashboard" class="h-4 w-4"></i><span>Dashboard</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="web"><i data-lucide="globe" class="h-4 w-4"></i><span>Website</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="db"><i data-lucide="database" class="h-4 w-4"></i><span>Database</span></button>
+    <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="ai"><i data-lucide="sparkles" class="h-4 w-4"></i><span>AI Chat</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="files"><i data-lucide="folder" class="h-4 w-4"></i><span>Files</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="cron"><i data-lucide="clock" class="h-4 w-4"></i><span>Cron</span></button>
     <button class="tab flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs font-medium text-muted" data-tab="backup"><i data-lucide="archive" class="h-4 w-4"></i><span>Backup</span></button>
@@ -175,12 +177,26 @@
       <p id="db-err" class="err"></p>
     </div>
     <div id="db-browser" class="hidden">
-      <div class="grid gap-3 lg:grid-cols-[230px_1fr]">
+    <div class="card mb-4 !p-4">
+      <div class="mb-2 flex flex-wrap items-center gap-2">
+        <h4 class="flex items-center gap-2 text-sm font-semibold"><i data-lucide="database" class="h-4 w-4 text-accent-h"></i>Database</h4>
+        <button id="db-create" class="btn btn-sm"><i data-lucide="plus" class="h-4 w-4"></i>Add Database</button>
+        <button id="db-restore-open" class="btn-ghost btn-sm"><i data-lucide="upload" class="h-4 w-4"></i>Restore Backup</button>
+      </div>
+      <p id="db-msg" class="hint"></p>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Database</th><th>Tables</th><th>Size</th><th>Actions</th></tr></thead><tbody id="db-list"></tbody></table></div>
+    </div>
+    <div class="card mb-4 !p-4">
+      <div class="mb-2 flex flex-wrap items-center gap-2">
+        <h4 class="flex items-center gap-2 text-sm font-semibold"><i data-lucide="user" class="h-4 w-4 text-accent-h"></i>Users</h4>
+        <button id="db-user-add" class="btn btn-sm"><i data-lucide="plus" class="h-4 w-4"></i>Add User</button>
+      </div>
+      <p class="hint">Postgres: user bersifat global, bukan per host — kolom Host tampil '-'. MySQL: user = username@host.</p>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>User</th><th>Host</th><th>Actions</th></tr></thead><tbody id="db-users"></tbody></table></div>
+    </div>
+    <div class="grid gap-3 lg:grid-cols-[230px_1fr]">
         <div class="card !p-4">
-          <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="database" class="h-4 w-4 text-accent-h"></i>Database</h4>
-          <button id="db-create" class="btn btn-sm mb-2"><i data-lucide="plus" class="h-4 w-4"></i>Create Database</button>
-          <div id="db-list"></div>
-          <h4 class="mb-2 mt-4 flex items-center gap-2 text-sm font-semibold"><i data-lucide="table" class="h-4 w-4 text-accent-h"></i>Tables</h4>
+          <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="table" class="h-4 w-4 text-accent-h"></i>Tables</h4>
           <div id="db-tables"></div>
         </div>
         <div class="card !p-4">
@@ -190,6 +206,43 @@
           <div id="db-result" class="mt-3"></div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- ============ AI CHAT ============ -->
+  <section id="tab-ai" class="tabpane">
+    <div class="mb-5"><h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><i data-lucide="sparkles" class="h-5 w-5 text-accent-h"></i>AI Chat</h2>
+    <p class="muted mt-1 text-sm">Chat dengan model OpenAI-compatible (seperti opencode CLI) — jawaban di-stream token demi token. Riwayat chat tersimpan lokal di browser ini.</p></div>
+    <div class="card mb-4 !p-4">
+      <h4 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="settings-2" class="h-4 w-4 text-accent-h"></i>Settings AI</h4>
+      <div class="frow">
+        <label class="lbl">Endpoint<input id="ai-endpoint" class="inp font-mono" placeholder="https://ai.skyzo.biz.id/v1"></label>
+        <label class="lbl">API Key<input id="ai-key" class="inp font-mono" type="password" placeholder="Kosong = pakai key tersimpan"></label>
+      </div>
+      <div class="frow">
+        <label class="lbl">Model
+          <select id="ai-model" class="inp font-mono"></select>
+        </label>
+        <label class="lbl">atau ketik model manual<input id="ai-model-custom" class="inp font-mono" placeholder="mis. deepseek-chat"></label>
+      </div>
+      <div class="frow">
+        <button id="ai-fetch" class="btn-ghost btn-sm"><i data-lucide="refresh-cw" class="h-4 w-4"></i>Fetch Models</button>
+        <button id="ai-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Save</button>
+        <span id="ai-key-state" class="muted text-sm"></span>
+      </div>
+      <p id="ai-err" class="err"></p>
+      <p id="ai-msg" class="hint"></p>
+    </div>
+    <div class="card !p-4">
+      <div class="mb-2 flex flex-wrap items-center gap-2">
+        <h4 class="flex items-center gap-2 text-sm font-semibold"><i data-lucide="message-square" class="h-4 w-4 text-accent-h"></i>Chat</h4>
+        <span id="ai-chat-model" class="muted text-sm"></span>
+        <button id="ai-new" class="btn-ghost btn-sm"><i data-lucide="plus" class="h-4 w-4"></i>New Chat</button>
+        <button id="ai-stop" class="btn-ghost btn-sm hidden"><i data-lucide="square" class="h-4 w-4"></i>Stop</button>
+      </div>
+      <div id="ai-messages" class="flex flex-col gap-2" style="max-height:55vh;overflow-y:auto"></div>
+      <textarea id="ai-input" class="inp mt-3" rows="2" placeholder="Tulis pesan… (Enter = kirim, Shift+Enter = baris baru)"></textarea>
+      <button id="ai-send" class="btn btn-sm mt-2"><i data-lucide="send" class="h-4 w-4"></i>Send</button>
     </div>
   </section>
 
@@ -407,6 +460,24 @@
     <div class="flex flex-col gap-3">
       <input id="db-new-name" class="inp font-mono" placeholder="Nama database (huruf, angka, underscore)">
       <p class="hint">Hanya huruf, angka, dan underscore; diawali huruf/underscore; maks 64 karakter.</p>
+      <label class="lbl-check"><input id="db-with-user" type="checkbox" class="h-4 w-4 accent-accent">Buat user sekalian (ala aaPanel: user + hak penuh ke database ini)</label>
+      <div id="db-user-fields" class="hidden flex flex-col gap-3">
+        <input id="db-new-user" class="inp font-mono" placeholder="Username (kosong = sama dengan nama database)">
+        <div class="frow">
+          <input id="db-new-pass" class="inp font-mono" type="password" placeholder="Password (min 8 karakter)">
+          <button id="db-new-gen" class="btn-ghost btn-sm" type="button">Generate</button>
+        </div>
+        <div id="db-host-row">
+          <label class="lbl">Akses
+            <select id="db-new-host" class="inp">
+              <option value="localhost">Localhost saja</option>
+              <option value="%">Semua host (%)</option>
+              <option value="custom">Host tertentu…</option>
+            </select>
+          </label>
+          <input id="db-new-host-custom" class="inp font-mono hidden" placeholder="IP / hostname, mis. 192.168.1.10">
+        </div>
+      </div>
     </div>
     <div class="mt-4 flex justify-end"><button id="db-modal-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Create</button></div>
     <p id="db-modal-err" class="err mt-2"></p>
@@ -435,6 +506,85 @@
       <button id="stun-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Start Tunnel</button>
     </div>
     <p id="stun-err" class="err mt-2"></p>
+  </div>
+</div>
+
+<!-- modal tambah user database -->
+<div id="dbuser-modal" class="fixed inset-0 z-50 flex hidden items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+  <div class="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl">
+    <div class="mb-4 flex items-center justify-between"><span class="font-semibold">Add User</span><button id="dbuser-close" class="btn-icon"><i data-lucide="x" class="h-4 w-4"></i></button></div>
+    <div class="flex flex-col gap-3">
+      <input id="dbuser-name" class="inp font-mono" placeholder="Username">
+      <div class="frow">
+        <input id="dbuser-pass" class="inp font-mono" type="password" placeholder="Password (min 8 karakter)">
+        <button id="dbuser-gen" class="btn-ghost btn-sm" type="button">Generate</button>
+      </div>
+      <div id="dbuser-host-row">
+        <label class="lbl">Akses
+          <select id="dbuser-host" class="inp">
+            <option value="localhost">Localhost saja</option>
+            <option value="%">Semua host (%)</option>
+            <option value="custom">Host tertentu…</option>
+          </select>
+        </label>
+        <input id="dbuser-host-custom" class="inp font-mono hidden" placeholder="IP / hostname">
+      </div>
+      <label class="lbl">Beri hak ke database (opsional)
+        <select id="dbuser-db" class="inp"><option value="">(tidak diberi hak)</option></select>
+      </label>
+    </div>
+    <div class="mt-4 flex justify-end"><button id="dbuser-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Create User</button></div>
+    <p id="dbuser-err" class="err mt-2"></p>
+  </div>
+</div>
+
+<!-- modal ganti password user -->
+<div id="dbpw-modal" class="fixed inset-0 z-50 flex hidden items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+  <div class="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl">
+    <div class="mb-4 flex items-center justify-between"><span id="dbpw-title" class="font-semibold">Change Password</span><button id="dbpw-close" class="btn-icon"><i data-lucide="x" class="h-4 w-4"></i></button></div>
+    <div class="flex flex-col gap-3">
+      <div class="frow">
+        <input id="dbpw-pass" class="inp font-mono" type="password" placeholder="Password baru (min 8 karakter)">
+        <button id="dbpw-gen" class="btn-ghost btn-sm" type="button">Generate</button>
+      </div>
+    </div>
+    <div class="mt-4 flex justify-end"><button id="dbpw-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Save Password</button></div>
+    <p id="dbpw-err" class="err mt-2"></p>
+  </div>
+</div>
+
+<!-- modal hak akses user -->
+<div id="dbgrant-modal" class="fixed inset-0 z-50 flex hidden items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+  <div class="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl">
+    <div class="mb-4 flex items-center justify-between"><span id="dbgrant-title" class="font-semibold">Privileges</span><button id="dbgrant-close" class="btn-icon"><i data-lucide="x" class="h-4 w-4"></i></button></div>
+    <div class="flex flex-col gap-3">
+      <label class="lbl">Database
+        <select id="dbgrant-db" class="inp"></select>
+      </label>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button id="dbgrant-revoke" class="btn-ghost btn-sm">Revoke</button>
+      <button id="dbgrant-grant" class="btn btn-sm">Grant All</button>
+    </div>
+    <p id="dbgrant-err" class="err mt-2"></p>
+  </div>
+</div>
+
+<!-- modal restore backup -->
+<div id="dbrestore-modal" class="fixed inset-0 z-50 flex hidden items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+  <div class="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl">
+    <div class="mb-4 flex items-center justify-between"><span class="font-semibold">Restore Backup</span><button id="dbrestore-close" class="btn-icon"><i data-lucide="x" class="h-4 w-4"></i></button></div>
+    <div class="flex flex-col gap-3">
+      <label class="lbl">File backup (dari ~/.termux-panel/db-backups)
+        <select id="dbrestore-file" class="inp"></select>
+      </label>
+      <label class="lbl">Ke database
+        <input id="dbrestore-db" class="inp font-mono" placeholder="Nama database tujuan">
+      </label>
+      <p class="hint">Backup MySQL berisi CREATE DATABASE, jadi restore akan membuat database bila belum ada. Backup Postgres butuh database tujuan sudah ada.</p>
+    </div>
+    <div class="mt-4 flex justify-end"><button id="dbrestore-save" class="btn btn-sm"><i data-lucide="upload" class="h-4 w-4"></i>Restore</button></div>
+    <p id="dbrestore-err" class="err mt-2"></p>
   </div>
 </div>
 

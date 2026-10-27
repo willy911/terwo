@@ -747,6 +747,15 @@ async function apiDbCreate(req, res, t) {
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) {
     throw new Error('Nama database tidak valid (huruf, angka, underscore; diawali huruf/underscore; maks 64 karakter)');
   }
+  // Validasi user SEKALIAN di sini, sebelum CREATE DATABASE, supaya database
+  // tidak terlanjur dibuat bila password/host user ternyata tidak valid.
+  const preUser = (body.user || '').trim();
+  const preHost = t === 'mysql' ? ((body.host || 'localhost').trim() || 'localhost') : '-';
+  if (preUser) {
+    if (!dbIdentValid(preUser)) throw new Error('Nama user tidak valid');
+    if (!body.password || body.password.length < 8) throw new Error('Password minimal 8 karakter');
+    if (t === 'mysql' && !dbHostValid(preHost)) throw new Error('Host tidak valid');
+  }
   if (!dbConns[t]) throw new Error('Not connected');
   if (t === 'mysql') {
     await dbQuery(t, 'CREATE DATABASE `' + name + '`');
@@ -755,8 +764,319 @@ async function apiDbCreate(req, res, t) {
     // panel tidak membuka transaksi eksplisit, jadi query langsung aman.
     await dbQuery(t, 'CREATE DATABASE ' + pgIdent(name));
   }
+  // Gaya aaPanel: bila username diisi, sekalian buat user + grant ke database ini.
+  const newUser = (body.user || '').trim();
+  if (newUser) {
+    const newHost = t === 'mysql' ? ((body.host || 'localhost').trim() || 'localhost') : '-';
+    await dbCreateUser(t, newUser, body.password || '', newHost);
+    await dbGrant(t, newUser, newHost, name);
+  }
   sendJson(res, 200, { ok: true, database: name, databases: await dbListDatabases(t) });
 }
+
+// ================= Manajemen database ala aaPanel =================
+// Tabel database (nama, jumlah tabel, ukuran), hapus database,
+// kelola user (tambah/hapus/ganti password/grant per database),
+// backup (mysqldump/pg_dump) + restore dari file backup.
+// Semua identifier divalidasi ketat (huruf/angka/underscore) dan password
+// di-escape (' -> '') sebelum masuk ke string literal SQL, jadi tidak ada
+// injeksi lewat nama user/database maupun password.
+function dbIdentValid(name) { return /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(String(name || '')); }
+function dbHostValid(h) { return h === '%' || h === 'localhost' || /^[A-Za-z0-9.-]{1,253}$/.test(String(h || '')); }
+function sqlStr(v) { return "'" + String(v).replace(/'/g, "''") + "'"; }
+function dbCfgFor(t) { const cfgs = loadDbConfigs(); return normCfg(t, cfgs[t] || {}); }
+async function dbCreateUser(t, user, password, host) {
+  if (!dbIdentValid(user)) throw new Error('Nama user tidak valid');
+  if (!password || password.length < 8) throw new Error('Password minimal 8 karakter');
+  if (t === 'mysql') {
+    if (!dbHostValid(host)) throw new Error('Host tidak valid (localhost, %, atau IP/hostname)');
+    await dbQuery(t, 'CREATE USER ' + sqlStr(user) + '@' + sqlStr(host) + ' IDENTIFIED BY ' + sqlStr(password));
+  } else {
+    await dbQuery(t, 'CREATE ROLE ' + pgIdent(user) + ' LOGIN PASSWORD ' + sqlStr(password));
+  }
+}
+async function dbGrant(t, user, host, database) {
+  if (!dbIdentValid(user) || !dbIdentValid(database)) throw new Error('Nama user/database tidak valid');
+  if (t === 'mysql') {
+    if (!dbHostValid(host)) throw new Error('Host tidak valid');
+    await dbQuery(t, 'GRANT ALL PRIVILEGES ON `' + database + '`.* TO ' + sqlStr(user) + '@' + sqlStr(host));
+    await dbQuery(t, 'FLUSH PRIVILEGES');
+  } else {
+    await dbQuery(t, 'GRANT ALL PRIVILEGES ON DATABASE ' + pgIdent(database) + ' TO ' + pgIdent(user));
+  }
+}
+async function dbRevoke(t, user, host, database) {
+  if (!dbIdentValid(user) || !dbIdentValid(database)) throw new Error('Nama user/database tidak valid');
+  if (t === 'mysql') {
+    if (!dbHostValid(host)) throw new Error('Host tidak valid');
+    await dbQuery(t, 'REVOKE ALL PRIVILEGES ON `' + database + '`.* FROM ' + sqlStr(user) + '@' + sqlStr(host));
+    await dbQuery(t, 'FLUSH PRIVILEGES');
+  } else {
+    await dbQuery(t, 'REVOKE ALL PRIVILEGES ON DATABASE ' + pgIdent(database) + ' FROM ' + pgIdent(user));
+  }
+}
+async function apiDbDetails(res, t) {
+  dbValidType(t);
+  if (!dbConns[t]) throw new Error('Not connected');
+  const dbs = await dbListDatabases(t);
+  if (t === 'mysql') {
+    const r = await dbQuery(t, 'SELECT table_schema AS s, COUNT(*) AS c, COALESCE(SUM(data_length+index_length),0) AS sz FROM information_schema.tables GROUP BY table_schema');
+    const m = {};
+    for (const row of r.rows) m[row.s] = { tables: Number(row.c), size: Number(row.sz) };
+    sendJson(res, 200, { databases: dbs.map((d) => ({ name: d, tables: (m[d] || {}).tables || 0, size: (m[d] || {}).size || 0 })) });
+    return;
+  }
+  const r = await dbQuery(t, 'SELECT datname, pg_database_size(datname) AS sz FROM pg_database WHERE datistemplate=false ORDER BY datname');
+  const sz = {};
+  for (const row of r.rows) sz[row.datname] = Number(row.sz);
+  const out = [];
+  for (const d of dbs) {
+    let tables = 0;
+    try {
+      tables = await withPgDb(t, dbCfgFor(t), d, async (c) => {
+        const q = await c.query("SELECT COUNT(*) AS c FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')");
+        return Number(q.rows[0].c);
+      });
+    } catch { /* database yang tidak bisa dibuka: hitung 0 */ }
+    out.push({ name: d, tables, size: sz[d] || 0 });
+  }
+  sendJson(res, 200, { databases: out });
+}
+async function apiDbDelete(req, res, t, name) {
+  dbValidType(t);
+  if (!dbIdentValid(name)) throw new Error('Nama database tidak valid');
+  if (!dbConns[t]) throw new Error('Not connected');
+  if (t === 'mysql') await dbQuery(t, 'DROP DATABASE `' + name + '`');
+  else await dbQuery(t, 'DROP DATABASE ' + pgIdent(name));
+  sendJson(res, 200, { ok: true, databases: await dbListDatabases(t) });
+}
+async function apiDbUsers(res, t) {
+  dbValidType(t);
+  if (!dbConns[t]) throw new Error('Not connected');
+  if (t === 'mysql') {
+    const r = await dbQuery(t, 'SELECT User AS user, Host AS host FROM mysql.user ORDER BY User, Host');
+    sendJson(res, 200, { users: r.rows });
+    return;
+  }
+  const r = await dbQuery(t, 'SELECT usename AS user FROM pg_roles WHERE rolcanlogin ORDER BY usename');
+  sendJson(res, 200, { users: r.rows.map((x) => ({ user: x.user, host: '-' })) });
+}
+async function apiDbUserCreate(req, res, t) {
+  dbValidType(t);
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const user = (b.username || '').trim();
+  const host = t === 'mysql' ? ((b.host || 'localhost').trim() || 'localhost') : '-';
+  if (!dbIdentValid(user)) throw new Error('Nama user tidak valid');
+  if (!b.password || b.password.length < 8) throw new Error('Password minimal 8 karakter');
+  if (t === 'mysql' && !dbHostValid(host)) throw new Error('Host tidak valid');
+  if (b.database && !dbIdentValid((b.database || '').trim())) throw new Error('Nama database tidak valid');
+  if (!dbConns[t]) throw new Error('Not connected');
+  await dbCreateUser(t, user, b.password || '', host);
+  if (b.database) await dbGrant(t, user, host, (b.database || '').trim());
+  sendJson(res, 200, { ok: true });
+}
+async function apiDbUserDelete(req, res, t) {
+  dbValidType(t);
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const user = (b.user || '').trim();
+  const host = t === 'mysql' ? ((b.host || 'localhost').trim() || 'localhost') : '-';
+  if (!dbIdentValid(user)) throw new Error('Nama user tidak valid');
+  if (t === 'mysql' && !dbHostValid(host)) throw new Error('Host tidak valid');
+  if (!dbConns[t]) throw new Error('Not connected');
+  if (t === 'mysql') {
+    if (!dbHostValid(host)) throw new Error('Host tidak valid');
+    await dbQuery(t, 'DROP USER ' + sqlStr(user) + '@' + sqlStr(host));
+  } else {
+    await dbQuery(t, 'DROP ROLE ' + pgIdent(user));
+  }
+  sendJson(res, 200, { ok: true });
+}
+async function apiDbUserPassword(req, res, t) {
+  dbValidType(t);
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const user = (b.user || '').trim();
+  const host = t === 'mysql' ? ((b.host || 'localhost').trim() || 'localhost') : '-';
+  if (!dbIdentValid(user)) throw new Error('Nama user tidak valid');
+  if (!b.password || b.password.length < 8) throw new Error('Password minimal 8 karakter');
+  if (t === 'mysql' && !dbHostValid(host)) throw new Error('Host tidak valid');
+  if (!dbConns[t]) throw new Error('Not connected');
+  if (t === 'mysql') {
+    if (!dbHostValid(host)) throw new Error('Host tidak valid');
+    await dbQuery(t, 'ALTER USER ' + sqlStr(user) + '@' + sqlStr(host) + ' IDENTIFIED BY ' + sqlStr(b.password));
+  } else {
+    await dbQuery(t, 'ALTER ROLE ' + pgIdent(user) + ' WITH PASSWORD ' + sqlStr(b.password));
+  }
+  sendJson(res, 200, { ok: true });
+}
+async function apiDbUserGrant(req, res, t) {
+  dbValidType(t);
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const user = (b.user || '').trim();
+  const host = t === 'mysql' ? ((b.host || 'localhost').trim() || 'localhost') : '-';
+  const database = (b.database || '').trim();
+  if (!dbIdentValid(user) || !dbIdentValid(database)) throw new Error('Nama user/database tidak valid');
+  if (t === 'mysql' && !dbHostValid(host)) throw new Error('Host tidak valid');
+  if (b.action !== 'grant' && b.action !== 'revoke') throw new Error('Action harus grant atau revoke');
+  if (!dbConns[t]) throw new Error('Not connected');
+  if (b.action === 'grant') await dbGrant(t, user, host, database);
+  else if (b.action === 'revoke') await dbRevoke(t, user, host, database);
+  else throw new Error('Action harus grant atau revoke');
+  sendJson(res, 200, { ok: true });
+}
+function dbBackupDir() { return path.join(DATA_DIR, 'db-backups'); }
+async function apiDbBackups(res) {
+  const dir = dbBackupDir();
+  let files = [];
+  try {
+    const names = await fsp.readdir(dir);
+    for (const n of names.sort().reverse()) {
+      try { const st = await fsp.stat(path.join(dir, n)); if (st.isFile()) files.push({ file: n, size: st.size, mtime: st.mtimeMs }); } catch {}
+    }
+  } catch { /* belum ada backup: daftar kosong */ }
+  sendJson(res, 200, { backups: files });
+}
+function runDump(bin, args, env, outFile) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { env: Object.assign({}, process.env, env) });
+    const out = fs.createWriteStream(outFile);
+    let err = '';
+    child.stdout.pipe(out);
+    child.stderr.on('data', (d) => { err += d.toString('utf8'); });
+    child.on('error', (e) => reject(new Error(bin + ' tidak ditemukan: ' + e.message)));
+    child.on('exit', (code) => {
+      out.end();
+      if (code === 0) resolve();
+      else reject(new Error(bin + ' gagal (exit ' + code + '): ' + err.slice(-500)));
+    });
+  });
+}
+async function apiDbBackup(req, res, t, name) {
+  dbValidType(t);
+  if (!dbIdentValid(name)) throw new Error('Nama database tidak valid');
+  if (!dbConns[t]) throw new Error('Not connected');
+  const cfg = dbCfgFor(t);
+  const dir = dbBackupDir();
+  await fsp.mkdir(dir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const file = name + '-' + ts + '.sql';
+  try {
+    if (t === 'mysql') {
+      await runDump('mysqldump', ['--host', cfg.host, '--port', String(cfg.port), '--user', cfg.user, '--databases', name, '--single-transaction', '--routines', '--events'], { MYSQL_PWD: cfg.password || '' }, path.join(dir, file));
+    } else {
+      await runDump('pg_dump', ['--host', cfg.host, '--port', String(cfg.port), '--username', cfg.user, '--dbname', name, '--clean', '--if-exists'], { PGPASSWORD: cfg.password || '' }, path.join(dir, file));
+    }
+  } catch (e) {
+    try { await fsp.unlink(path.join(dir, file)); } catch {}
+    throw e;
+  }
+  const st = await fsp.stat(path.join(dir, file));
+  sendJson(res, 200, { ok: true, file, size: st.size });
+}
+async function apiDbRestore(req, res, t, name) {
+  dbValidType(t);
+  if (!dbIdentValid(name)) throw new Error('Nama database tidak valid');
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const file = b.file || '';
+  if (!/^[A-Za-z0-9_.-]+$/.test(file) || file.includes('..')) throw new Error('Nama file backup tidak valid');
+  if (!dbConns[t]) throw new Error('Not connected');
+  const full = path.join(dbBackupDir(), file);
+  const st = await fsp.stat(full).catch(() => null);
+  if (!st || !st.isFile()) throw new Error('File backup tidak ditemukan');
+  const cfg = dbCfgFor(t);
+  if (t === 'postgres') {
+    const existing = await dbListDatabases(t);
+    if (!existing.includes(name)) await dbQuery(t, 'CREATE DATABASE ' + pgIdent(name));
+  }
+  await new Promise((resolve, reject) => {
+    let child, err = '';
+    if (t === 'mysql') {
+      child = spawn('mysql', ['--host', cfg.host, '--port', String(cfg.port), '--user', cfg.user], { env: Object.assign({}, process.env, { MYSQL_PWD: cfg.password || '' }) });
+    } else {
+      child = spawn('psql', ['--host', cfg.host, '--port', String(cfg.port), '--username', cfg.user, '--dbname', name], { env: Object.assign({}, process.env, { PGPASSWORD: cfg.password || '' }) });
+    }
+    fs.createReadStream(full).pipe(child.stdin);
+    child.stderr.on('data', (d) => { err += d.toString('utf8'); });
+    child.on('error', (e) => reject(new Error('Client database tidak ditemukan: ' + e.message)));
+    child.on('exit', (code) => { if (code === 0) resolve(); else reject(new Error('Restore gagal (exit ' + code + '): ' + err.slice(-500))); });
+  });
+  sendJson(res, 200, { ok: true });
+}
+
+
+// ================= AI Chat (ala opencode CLI) =================
+// Settings OpenAI-compatible: endpoint, apiKey, model. Disimpan di
+// ~/.termux-panel/ai.json (0600). API TIDAK PERNAH mengembalikan apiKey,
+// hanya hasKey — pola yang sama dengan Settings AI Perisai (key tak pernah
+// ke browser). Fetch models + chat memakai fetch Node (undici).
+// Chat di-stream: backend meneruskan SSE upstream apa adanya ke browser,
+// dan frontend mengurai delta-nya (termasuk bungkus {"data": ...} ala
+// 9Router dan trailer "data: [DONE]").
+const AI_CFG_FILE = path.join(DATA_DIR, 'ai.json');
+function loadAiConfig() { try { return JSON.parse(fs.readFileSync(AI_CFG_FILE, 'utf8')); } catch { return {}; } }
+function saveAiConfig(cfg) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(AI_CFG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+}
+function aiNormBase(endpoint) {
+  const base = String(endpoint || '').trim().replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(base)) throw new Error('Endpoint harus URL http(s), mis. https://ai.skyzo.biz.id/v1');
+  return /\/v1$/.test(base) ? base : base + '/v1';
+}
+function aiPublic(cfg) { return { endpoint: cfg.endpoint || '', model: cfg.model || '', hasKey: !!cfg.apiKey }; }
+async function apiAiConfigGet(res) { sendJson(res, 200, aiPublic(loadAiConfig())); }
+async function apiAiConfigSave(req, res) {
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const endpoint = aiNormBase(b.endpoint || '');
+  const model = String(b.model || '').trim();
+  if (!model) throw new Error('Model wajib dipilih atau diketik');
+  const cur = loadAiConfig();
+  const key = String(b.apiKey || '').trim();
+  const cfg = { endpoint, model, apiKey: key ? key : (cur.apiKey || '') };
+  if (!cfg.apiKey) throw new Error('API key wajib diisi (belum ada key tersimpan)');
+  saveAiConfig(cfg);
+  sendJson(res, 200, Object.assign({ ok: true }, aiPublic(cfg)));
+}
+async function apiAiModels(req, res) {
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const cur = loadAiConfig();
+  const endpoint = aiNormBase(b.endpoint || cur.endpoint || '');
+  const key = String(b.apiKey || '').trim() || cur.apiKey || '';
+  if (!key) throw new Error('API key belum diatur');
+  const r = await fetch(endpoint + '/models', { headers: { Authorization: 'Bearer ' + key } });
+  const txt = await r.text();
+  if (!r.ok) throw new Error('Fetch models gagal (' + r.status + '): ' + txt.slice(0, 300));
+  let j;
+  try { j = JSON.parse(txt); } catch { throw new Error('Respons models bukan JSON'); }
+  const data = j.data || j.models || [];
+  const models = data.map((m) => (typeof m === 'string' ? m : m.id)).filter(Boolean).sort();
+  sendJson(res, 200, { models });
+}
+async function apiAiChat(req, res) {
+  const cfg = loadAiConfig();
+  if (!cfg.endpoint || !cfg.apiKey || !cfg.model) throw new Error('AI belum diatur: isi endpoint, API key, dan model di Settings AI dulu');
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  const msgs = (Array.isArray(b.messages) ? b.messages : [])
+    .filter((m) => m && typeof m.content === 'string' && (m.role === 'user' || m.role === 'assistant' || m.role === 'system'))
+    .slice(-50);
+  if (!msgs.length || msgs[msgs.length - 1].role !== 'user') throw new Error('Pesan terakhir harus dari user');
+  const r = await fetch(aiNormBase(cfg.endpoint) + '/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey },
+    body: JSON.stringify({ model: cfg.model, messages: msgs, stream: true }),
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '');
+    throw new Error('Chat gagal (' + r.status + '): ' + txt.slice(0, 300));
+  }
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  try {
+    for await (const chunk of r.body) res.write(chunk);
+  } catch (e) {
+    try { res.write('data: ' + JSON.stringify({ error: 'Stream terputus: ' + e.message }) + '\n\n'); } catch {}
+  }
+  res.end();
+}
+
 async function apiDbTables(url, res, t) {
   dbValidType(t);
   const db = url.searchParams.get('db');
@@ -1746,7 +2066,7 @@ const server = http.createServer((req, res) => {
 
 // App pages served by clean slugs (no .html). Each slug renders the same
 // shell; the client activates the matching tab from the URL path.
-const APP_PAGES = new Set(['dashboard', 'website', 'database', 'files', 'cron', 'backup', 'tunnel', 'settings', 'terminal', 'store']);
+const APP_PAGES = new Set(['dashboard', 'website', 'database', 'files', 'cron', 'backup', 'tunnel', 'settings', 'terminal', 'store', 'ai']);
 
 async function handleRequest(req, res) {
   try {
@@ -1844,6 +2164,33 @@ async function handleRequest(req, res) {
     }
 
     // database manager
+    // AI Chat
+    if (p === '/api/ai/config' && req.method === 'GET') return apiAiConfigGet(res);
+    if (p === '/api/ai/config' && req.method === 'POST') return apiAiConfigSave(req, res);
+    if (p === '/api/ai/models' && req.method === 'POST') return apiAiModels(req, res);
+    if (p === '/api/ai/chat' && req.method === 'POST') return apiAiChat(req, res);
+    // Manajemen database ala aaPanel (detail, hapus, user, backup/restore)
+    if (p === '/api/db/backups' && req.method === 'GET') return apiDbBackups(res);
+    const ddet = p.match(/^\/api\/db\/(mysql|postgres)\/databases\/details$/);
+    if (ddet && req.method === 'GET') return apiDbDetails(res, ddet[1]);
+    const ddel = p.match(/^\/api\/db\/(mysql|postgres)\/databases\/([^/]+)$/);
+    if (ddel && req.method === 'DELETE') return apiDbDelete(req, res, ddel[1], ddel[2]);
+    const dbk = p.match(/^\/api\/db\/(mysql|postgres)\/databases\/([^/]+)\/(backup|restore)$/);
+    if (dbk && req.method === 'POST') {
+      if (dbk[3] === 'backup') return apiDbBackup(req, res, dbk[1], dbk[2]);
+      return apiDbRestore(req, res, dbk[1], dbk[2]);
+    }
+    const dbu = p.match(/^\/api\/db\/(mysql|postgres)\/users$/);
+    if (dbu) {
+      if (req.method === 'GET') return apiDbUsers(res, dbu[1]);
+      if (req.method === 'POST') return apiDbUserCreate(req, res, dbu[1]);
+    }
+    const dbu2 = p.match(/^\/api\/db\/(mysql|postgres)\/users\/(password|grant|delete)$/);
+    if (dbu2 && req.method === 'POST') {
+      if (dbu2[2] === 'password') return apiDbUserPassword(req, res, dbu2[1]);
+      if (dbu2[2] === 'grant') return apiDbUserGrant(req, res, dbu2[1]);
+      return apiDbUserDelete(req, res, dbu2[1]);
+    }
     const dm = p.match(/^\/api\/db\/(mysql|postgres)\/(config|test|connect|disconnect|databases|tables|rows|query)$/);
     if (dm) {
       const dt = dm[1], da = dm[2];

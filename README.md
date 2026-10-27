@@ -1,4 +1,4 @@
-# Terwo v1.15.0
+# Terwo v1.17.0
 **Ter**mux **W**eb **O**peration
 
 A lightweight web panel to manage Termux from your browser: **file manager**,
@@ -117,9 +117,21 @@ PANEL_PORT=9000 node panel.js
 - **Website** — mini hosting for Node.js, PHP, Static, and Go projects:
   add websites, start/stop/restart, view logs, open directly from the port number.
   Includes a **Nginx reverse proxy** GUI: add/remove proxy hosts, start/stop/reload nginx.
-- **Database** — manage MySQL & PostgreSQL: connect, browse databases/tables,
-  run SQL, create a database from the **Create Database** button (modal, no
-  SQL typing needed; names are validated to letters/digits/underscore).
+- **AI Chat (ala opencode CLI)** — menu AI dengan chat streaming ke endpoint
+  OpenAI-compatible: Settings AI berisi endpoint, API key, tombol Fetch
+  Models (GET /v1/models), select model + ketik manual, dan Save. Key
+  disimpan di `~/.termux-panel/ai.json` (0600) dan tidak pernah dikembalikan
+  ke browser (hanya `hasKey`); chat di-stream token demi token dan riwayat
+  tersimpan lokal di browser.
+- **Database (ala aaPanel)** — manage MySQL & PostgreSQL: connect, browse
+  databases/tables, run SQL, plus tabel database (nama, jumlah tabel,
+  ukuran) dengan aksi Open/Backup/Restore/Delete; **Add Database** bisa
+  sekalian membuat user + hak penuh (username default = nama database,
+  password bisa di-Generate, akses localhost/%/host tertentu untuk MySQL);
+  kartu **Users** untuk tambah user, ganti password, grant/revoke hak per
+  database, dan hapus user; backup via mysqldump/pg_dump ke
+  `~/.termux-panel/db-backups/` (bisa diunduh) dan restore dari file backup
+  tersebut. Semua nama divalidasi dan password di-escape sebelum masuk SQL.
   Database yang config-nya pernah disimpan lewat Save & Connect akan
   auto-connect saat panel dijalankan (dicoba lagi tiap 30 detik sampai
   server databasenya hidup); Disconnect manual dihormati, retry tidak

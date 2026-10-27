@@ -66,10 +66,10 @@ function badgeOff(t) { return '<span class="badge badge-off">' + dot() + esc(t) 
 function badgeWarn(t) { return '<span class="badge badge-warn">' + dot() + esc(t) + '</span>'; }
 
 // ---------- tabs (one slug per page) ----------
-const TAB_SLUGS = { dashboard: 'dashboard', web: 'website', db: 'database', files: 'files', cron: 'cron', backup: 'backup', settings: 'settings', term: 'terminal', install: 'store' };
+const TAB_SLUGS = { dashboard: 'dashboard', web: 'website', db: 'database', files: 'files', cron: 'cron', backup: 'backup', settings: 'settings', term: 'terminal', install: 'store', ai: 'ai' };
 const SLUG_TABS = {};
 for (const k of Object.keys(TAB_SLUGS)) SLUG_TABS[TAB_SLUGS[k]] = k;
-const TAB_TITLES = { dashboard: 'Dashboard', web: 'Website', db: 'Database', files: 'File Manager', cron: 'Cron', backup: 'Backup', settings: 'Settings', term: 'Terminal', install: 'Store' };
+const TAB_TITLES = { dashboard: 'Dashboard', web: 'Website', db: 'Database', files: 'File Manager', cron: 'Cron', backup: 'Backup', settings: 'Settings', term: 'Terminal', install: 'Store', ai: 'AI Chat' };
 function tabFromPath() { const slug = location.pathname.replace(/^\/+|\/+$/g, ''); if (slug === 'tunnel') return 'web'; return SLUG_TABS[slug] || 'dashboard'; } // link /tunnel lama dialihkan ke Website
 function showTab(id, push) {
   if (!TAB_SLUGS[id]) id = 'dashboard';
@@ -79,6 +79,7 @@ function showTab(id, push) {
   document.title = TAB_TITLES[id] + ' — Terwo';
   if (id === 'install') loadInstall();
   if (id === 'db') loadDbConfig();
+  if (id === 'ai') loadAiConfig();
   if (id === 'web') { loadNginx(); loadSites(); }
   if (id === 'dashboard') startStats(); else stopStats();
   if (id === 'cron') loadCron();
@@ -803,7 +804,7 @@ async function loadDbConfig() {
     document.getElementById('db-name').value = c.database || '';
     dbConnected = !!j.connected;
     updateDbStatus();
-    if (dbConnected) loadDbList();
+    if (dbConnected) refreshDb();
   } catch { /* ignore */ }
 }
 function updateDbStatus() {
@@ -844,7 +845,7 @@ document.getElementById('db-connect').addEventListener('click', async () => {
   if (j.ok) {
     dbConnected = true;
     updateDbStatus();
-    loadDbList();
+    refreshDb();
   } else {
     err.textContent = j.error || 'Connection failed';
   }
@@ -854,25 +855,140 @@ document.getElementById('db-disconnect').addEventListener('click', async () => {
   dbConnected = false;
   updateDbStatus();
 });
+let dbNames = [];
+function formatSize(n) {
+  if (!n) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(1)) + ' ' + u[i];
+}
+function dbMsg(text, isErr) {
+  const el = document.getElementById('db-msg');
+  el.textContent = text || '';
+  el.className = isErr ? 'err' : 'hint';
+}
 async function loadDbList() {
   try {
-    const j = await (await api('/api/db/' + dbType + '/databases')).json();
+    const jj = await (await api('/api/db/' + dbType + '/databases/details')).json();
+    const list = jj.databases || [];
+    dbNames = list.map((d) => d.name);
     const el = document.getElementById('db-list');
     el.innerHTML = '';
-    for (const d of j.databases || []) {
-      const b = document.createElement('button');
-      b.className = 'list-item';
-      b.textContent = d;
-      b.addEventListener('click', () => loadDbTables(d));
-      el.appendChild(b);
+    for (const d of list) {
+      const tr = document.createElement('tr');
+      const nameTd = document.createElement('td');
+      const nb = document.createElement('button');
+      nb.className = 'font-mono text-[12.5px] text-accent-h underline';
+      nb.textContent = d.name;
+      nb.addEventListener('click', () => loadDbTables(d.name));
+      nameTd.appendChild(nb);
+      const tTd = document.createElement('td'); tTd.className = 'muted'; tTd.textContent = d.tables;
+      const sTd = document.createElement('td'); sTd.className = 'muted'; sTd.textContent = formatSize(d.size);
+      const aTd = document.createElement('td');
+      const act = document.createElement('div'); act.className = 'flex flex-wrap gap-1';
+      const mkA = (label, fn, danger) => {
+        const b = document.createElement('button');
+        b.className = danger ? 'btn-ghost btn-sm text-err' : 'btn-ghost btn-sm';
+        b.textContent = label;
+        b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
+        act.appendChild(b);
+      };
+      mkA('Open', () => loadDbTables(d.name));
+      mkA('Backup', () => backupDb(d.name));
+      mkA('Restore', () => openRestoreModal(d.name));
+      mkA('Delete', () => delDb(d.name), true);
+      aTd.appendChild(act);
+      tr.append(nameTd, tTd, sTd, aTd);
+      el.appendChild(tr);
     }
+    if (!list.length) el.innerHTML = '<tr><td colspan="4" class="muted">Belum ada database</td></tr>';
   } catch { /* ignore */ }
 }
-// ---------- create database (modal) ----------
+async function loadDbUsers() {
+  try {
+    const jj = await (await api('/api/db/' + dbType + '/users')).json();
+    const el = document.getElementById('db-users');
+    el.innerHTML = '';
+    for (const u of jj.users || []) {
+      const tr = document.createElement('tr');
+      const uTd = document.createElement('td'); uTd.className = 'font-mono text-[12.5px]'; uTd.textContent = u.user;
+      const hTd = document.createElement('td'); hTd.className = 'muted font-mono text-[12.5px]'; hTd.textContent = u.host;
+      const aTd = document.createElement('td');
+      const act = document.createElement('div'); act.className = 'flex flex-wrap gap-1';
+      const mkA = (label, fn, danger) => {
+        const b = document.createElement('button');
+        b.className = danger ? 'btn-ghost btn-sm text-err' : 'btn-ghost btn-sm';
+        b.textContent = label;
+        b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
+        act.appendChild(b);
+      };
+      mkA('Password', () => openPwModal(u.user, u.host));
+      mkA('Privileges', () => openGrantModal(u.user, u.host));
+      mkA('Delete', () => delDbUser(u.user, u.host), true);
+      aTd.appendChild(act);
+      tr.append(uTd, hTd, aTd);
+      el.appendChild(tr);
+    }
+    if (!(jj.users || []).length) el.innerHTML = '<tr><td colspan="3" class="muted">Belum ada user</td></tr>';
+  } catch { /* ignore */ }
+}
+function refreshDb() { loadDbList(); loadDbUsers(); }
+async function delDb(name) {
+  if (!(await confirmDialog({ title: 'Delete database?', message: 'Hapus database "' + name + '"? Semua data di dalamnya hilang permanen. User-nya tidak ikut dihapus.' }))) return;
+  const r = await api('/api/db/' + dbType + '/databases/' + encodeURIComponent(name), { method: 'DELETE' }).catch(() => null);
+  const jj = r ? await r.json().catch(() => ({})) : {};
+  if (jj.ok) { dbMsg('Database ' + name + ' dihapus'); document.getElementById('db-tables').innerHTML = ''; refreshDb(); }
+  else dbMsg('Gagal hapus database: ' + (jj.error || 'Failed'), true);
+}
+async function backupDb(name) {
+  dbMsg('Membuat backup ' + name + '…');
+  try {
+    const r = await api('/api/db/' + dbType + '/databases/' + encodeURIComponent(name) + '/backup', { method: 'POST' });
+    const jj = await r.json();
+    if (!jj.ok) { dbMsg('Backup gagal: ' + (jj.error || 'Failed'), true); return; }
+    dbMsg('Backup ' + name + ' selesai (' + formatSize(jj.size) + '), mengunduh…');
+    window.open('/api/download?path=' + encodeURIComponent('.termux-panel/db-backups') + '&name=' + encodeURIComponent(jj.file), '_blank');
+  } catch (e) { dbMsg('Backup gagal: ' + (e.message || 'Failed'), true); }
+}
+async function delDbUser(user, host) {
+  if (!(await confirmDialog({ title: 'Delete user?', message: 'Hapus user "' + user + '@' + host + '"?' }))) return;
+  const r = await api('/api/db/' + dbType + '/users/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user, host }) }).catch(() => null);
+  const jj = r ? await r.json().catch(() => ({})) : {};
+  if (jj.ok) { dbMsg('User ' + user + ' dihapus'); refreshDb(); }
+  else dbMsg('Gagal hapus user: ' + (jj.error || 'Failed'), true);
+}
+// ---------- create database (modal, ala aaPanel) ----------
 const dbModal = document.getElementById('db-modal');
+function genPassword() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*';
+  const buf = new Uint32Array(16);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, (x) => chars[x % chars.length]).join('');
+}
+function dbHostValue(selectId, customId) {
+  const v = document.getElementById(selectId).value;
+  if (v !== 'custom') return v;
+  return document.getElementById(customId).value.trim();
+}
+function bindHostSelect(selectId, customId) {
+  document.getElementById(selectId).addEventListener('change', (e) => {
+    document.getElementById(customId).classList.toggle('hidden', e.target.value !== 'custom');
+  });
+}
+bindHostSelect('db-new-host', 'db-new-host-custom');
+bindHostSelect('dbuser-host', 'dbuser-host-custom');
 function openDbModal() {
-  document.getElementById('db-modal-title').textContent = 'Create Database (' + dbType + ')';
+  document.getElementById('db-modal-title').textContent = 'Add Database (' + dbType + ')';
   document.getElementById('db-new-name').value = '';
+  document.getElementById('db-with-user').checked = false;
+  document.getElementById('db-user-fields').classList.add('hidden');
+  document.getElementById('db-new-user').value = '';
+  document.getElementById('db-new-pass').value = '';
+  document.getElementById('db-new-host').value = 'localhost';
+  document.getElementById('db-new-host-custom').classList.add('hidden');
+  document.getElementById('db-new-host-custom').value = '';
+  document.getElementById('db-host-row').style.display = dbType === 'mysql' ? '' : 'none';
   document.getElementById('db-modal-err').textContent = '';
   dbModal.classList.remove('hidden');
   document.getElementById('db-new-name').focus();
@@ -882,21 +998,156 @@ function closeDbModal() { dbModal.classList.add('hidden'); }
 document.getElementById('db-create').addEventListener('click', openDbModal);
 document.getElementById('db-modal-close').addEventListener('click', closeDbModal);
 dbModal.addEventListener('click', (e) => { if (e.target === dbModal) closeDbModal(); });
+document.getElementById('db-with-user').addEventListener('change', (e) => {
+  document.getElementById('db-user-fields').classList.toggle('hidden', !e.target.checked);
+  if (e.target.checked && !document.getElementById('db-new-user').value) {
+    document.getElementById('db-new-user').value = document.getElementById('db-new-name').value.trim();
+  }
+});
+document.getElementById('db-new-gen').addEventListener('click', () => { document.getElementById('db-new-pass').value = genPassword(); });
 async function saveDbModal() {
   const err = document.getElementById('db-modal-err');
   err.textContent = '';
   const name = document.getElementById('db-new-name').value.trim();
   if (!name) { err.textContent = 'Nama database wajib diisi'; return; }
+  const body = { name };
+  if (document.getElementById('db-with-user').checked) {
+    body.user = document.getElementById('db-new-user').value.trim() || name;
+    body.password = document.getElementById('db-new-pass').value;
+    if (dbType === 'mysql') body.host = dbHostValue('db-new-host', 'db-new-host-custom');
+    if (!body.password) { err.textContent = 'Password user wajib diisi (atau klik Generate)'; return; }
+  }
   const r = await api('/api/db/' + dbType + '/databases', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(body),
   });
-  const j = await r.json();
-  if (j.ok) { closeDbModal(); loadDbList(); }
-  else err.textContent = j.error || 'Failed';
+  const jj = await r.json();
+  if (jj.ok) { closeDbModal(); dbMsg('Database ' + name + ' dibuat' + (body.user ? ' + user ' + body.user : '')); refreshDb(); }
+  else err.textContent = jj.error || 'Failed';
 }
 document.getElementById('db-modal-save').addEventListener('click', saveDbModal);
 document.getElementById('db-new-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveDbModal(); });
+// ---------- add user ----------
+const dbuserModal = document.getElementById('dbuser-modal');
+function fillDbSelect(sel, includeEmpty) {
+  sel.innerHTML = '';
+  if (includeEmpty) { const o = document.createElement('option'); o.value = ''; o.textContent = '(tidak diberi hak)'; sel.appendChild(o); }
+  for (const d of dbNames) { const o = document.createElement('option'); o.value = d; o.textContent = d; sel.appendChild(o); }
+}
+function openUserModal() {
+  document.getElementById('dbuser-name').value = '';
+  document.getElementById('dbuser-pass').value = '';
+  document.getElementById('dbuser-host').value = 'localhost';
+  document.getElementById('dbuser-host-custom').classList.add('hidden');
+  document.getElementById('dbuser-host-custom').value = '';
+  document.getElementById('dbuser-host-row').style.display = dbType === 'mysql' ? '' : 'none';
+  fillDbSelect(document.getElementById('dbuser-db'), true);
+  document.getElementById('dbuser-err').textContent = '';
+  dbuserModal.classList.remove('hidden');
+  document.getElementById('dbuser-name').focus();
+  refreshIcons();
+}
+function closeUserModal() { dbuserModal.classList.add('hidden'); }
+document.getElementById('db-user-add').addEventListener('click', openUserModal);
+document.getElementById('dbuser-close').addEventListener('click', closeUserModal);
+dbuserModal.addEventListener('click', (e) => { if (e.target === dbuserModal) closeUserModal(); });
+document.getElementById('dbuser-gen').addEventListener('click', () => { document.getElementById('dbuser-pass').value = genPassword(); });
+document.getElementById('dbuser-save').addEventListener('click', async () => {
+  const err = document.getElementById('dbuser-err');
+  err.textContent = '';
+  const body = {
+    username: document.getElementById('dbuser-name').value.trim(),
+    password: document.getElementById('dbuser-pass').value,
+    database: document.getElementById('dbuser-db').value,
+  };
+  if (dbType === 'mysql') body.host = dbHostValue('dbuser-host', 'dbuser-host-custom');
+  if (!body.username) { err.textContent = 'Username wajib diisi'; return; }
+  const r = await api('/api/db/' + dbType + '/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const jj = await r.json();
+  if (jj.ok) { closeUserModal(); dbMsg('User ' + body.username + ' dibuat'); refreshDb(); }
+  else err.textContent = jj.error || 'Failed';
+});
+// ---------- change password ----------
+let curPwUser = '', curPwHost = '';
+const dbpwModal = document.getElementById('dbpw-modal');
+function openPwModal(user, host) {
+  curPwUser = user; curPwHost = host;
+  document.getElementById('dbpw-title').textContent = 'Change Password: ' + user + (host !== '-' ? '@' + host : '');
+  document.getElementById('dbpw-pass').value = '';
+  document.getElementById('dbpw-err').textContent = '';
+  dbpwModal.classList.remove('hidden');
+  document.getElementById('dbpw-pass').focus();
+  refreshIcons();
+}
+function closePwModal() { dbpwModal.classList.add('hidden'); }
+document.getElementById('dbpw-close').addEventListener('click', closePwModal);
+dbpwModal.addEventListener('click', (e) => { if (e.target === dbpwModal) closePwModal(); });
+document.getElementById('dbpw-gen').addEventListener('click', () => { document.getElementById('dbpw-pass').value = genPassword(); });
+document.getElementById('dbpw-save').addEventListener('click', async () => {
+  const err = document.getElementById('dbpw-err');
+  err.textContent = '';
+  const r = await api('/api/db/' + dbType + '/users/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: curPwUser, host: curPwHost, password: document.getElementById('dbpw-pass').value }) });
+  const jj = await r.json();
+  if (jj.ok) { closePwModal(); dbMsg('Password user ' + curPwUser + ' diubah'); }
+  else err.textContent = jj.error || 'Failed';
+});
+// ---------- privileges ----------
+let curGrantUser = '', curGrantHost = '';
+const dbgrantModal = document.getElementById('dbgrant-modal');
+function openGrantModal(user, host) {
+  curGrantUser = user; curGrantHost = host;
+  document.getElementById('dbgrant-title').textContent = 'Privileges: ' + user + (host !== '-' ? '@' + host : '');
+  fillDbSelect(document.getElementById('dbgrant-db'), false);
+  document.getElementById('dbgrant-err').textContent = '';
+  dbgrantModal.classList.remove('hidden');
+  refreshIcons();
+}
+function closeGrantModal() { dbgrantModal.classList.add('hidden'); }
+document.getElementById('dbgrant-close').addEventListener('click', closeGrantModal);
+dbgrantModal.addEventListener('click', (e) => { if (e.target === dbgrantModal) closeGrantModal(); });
+async function grantAct(action) {
+  const err = document.getElementById('dbgrant-err');
+  err.textContent = '';
+  const database = document.getElementById('dbgrant-db').value;
+  if (!database) { err.textContent = 'Pilih database dulu'; return; }
+  const r = await api('/api/db/' + dbType + '/users/grant', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: curGrantUser, host: curGrantHost, database, action }) });
+  const jj = await r.json();
+  if (jj.ok) { closeGrantModal(); dbMsg((action === 'grant' ? 'Hak penuh diberikan' : 'Hak dicabut') + ' untuk ' + curGrantUser + ' pada ' + database); }
+  else err.textContent = jj.error || 'Failed';
+}
+document.getElementById('dbgrant-grant').addEventListener('click', () => grantAct('grant'));
+document.getElementById('dbgrant-revoke').addEventListener('click', () => grantAct('revoke'));
+// ---------- restore backup ----------
+const dbrestoreModal = document.getElementById('dbrestore-modal');
+async function openRestoreModal(prefillDb) {
+  document.getElementById('dbrestore-db').value = prefillDb || '';
+  document.getElementById('dbrestore-err').textContent = '';
+  const sel = document.getElementById('dbrestore-file');
+  sel.innerHTML = '';
+  try {
+    const jj = await (await api('/api/db/backups')).json();
+    for (const b of jj.backups || []) { const o = document.createElement('option'); o.value = b.file; o.textContent = b.file + ' (' + formatSize(b.size) + ')'; sel.appendChild(o); }
+    if (!(jj.backups || []).length) { const o = document.createElement('option'); o.value = ''; o.textContent = '(belum ada backup)'; sel.appendChild(o); }
+  } catch { const o = document.createElement('option'); o.value = ''; o.textContent = '(gagal memuat daftar)'; sel.appendChild(o); }
+  dbrestoreModal.classList.remove('hidden');
+  refreshIcons();
+}
+function closeRestoreModal() { dbrestoreModal.classList.add('hidden'); }
+document.getElementById('db-restore-open').addEventListener('click', () => openRestoreModal(''));
+document.getElementById('dbrestore-close').addEventListener('click', closeRestoreModal);
+dbrestoreModal.addEventListener('click', (e) => { if (e.target === dbrestoreModal) closeRestoreModal(); });
+document.getElementById('dbrestore-save').addEventListener('click', async () => {
+  const err = document.getElementById('dbrestore-err');
+  err.textContent = '';
+  const database = document.getElementById('dbrestore-db').value.trim();
+  const file = document.getElementById('dbrestore-file').value;
+  if (!database) { err.textContent = 'Nama database tujuan wajib diisi'; return; }
+  if (!file) { err.textContent = 'Pilih file backup dulu'; return; }
+  const r = await api('/api/db/' + dbType + '/databases/' + encodeURIComponent(database) + '/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
+  const jj = await r.json();
+  if (jj.ok) { closeRestoreModal(); dbMsg('Restore ' + file + ' ke ' + database + ' selesai'); refreshDb(); }
+  else err.textContent = jj.error || 'Failed';
+});
 async function loadDbTables(db) {
   try {
     const j = await (await api('/api/db/' + dbType + '/tables?db=' + encodeURIComponent(db))).json();
@@ -1227,3 +1478,133 @@ loadSites();
 // showTab menyuntikkan markup baru, jadi konversi ikon dilakukan SESUDAHNYA
 showTab(tabFromPath(), false);
 refreshIcons();
+
+// ---------- AI Chat (ala opencode CLI) ----------
+let aiMessages = [];
+try { aiMessages = JSON.parse(localStorage.getItem('terwo-ai-chat') || '[]').filter((m) => m && (m.role === 'user' || m.role === 'assistant')); } catch { aiMessages = []; }
+let aiSavedModel = '';
+let aiAbort = null;
+function aiSaveLocal() { try { localStorage.setItem('terwo-ai-chat', JSON.stringify(aiMessages.slice(-100))); } catch {} }
+function renderAiMessages() {
+  const el = document.getElementById('ai-messages');
+  el.innerHTML = '';
+  for (const m of aiMessages) {
+    const d = document.createElement('div');
+    d.className = 'rounded-xl px-3 py-2 text-sm whitespace-pre-wrap';
+    if (m.role === 'user') { d.style.cssText = 'align-self:flex-end;background:var(--accent);color:#fff;max-width:85%'; }
+    else { d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%'; }
+    d.textContent = m.content;
+    el.appendChild(d);
+  }
+  el.scrollTop = el.scrollHeight;
+}
+function aiMsg(text, isErr) {
+  const el = document.getElementById('ai-msg');
+  el.textContent = text || '';
+  el.className = isErr ? 'err' : 'hint';
+}
+async function loadAiConfig() {
+  try {
+    const jj = await (await api('/api/ai/config')).json();
+    document.getElementById('ai-endpoint').value = jj.endpoint || '';
+    document.getElementById('ai-key-state').textContent = jj.hasKey ? 'API key tersimpan (kosongkan kolom key bila tidak ingin mengubahnya)' : 'API key belum diatur';
+    aiSavedModel = jj.model || '';
+    const sel = document.getElementById('ai-model');
+    sel.innerHTML = '';
+    if (aiSavedModel) { const o = document.createElement('option'); o.value = aiSavedModel; o.textContent = aiSavedModel; sel.appendChild(o); }
+    document.getElementById('ai-chat-model').textContent = aiSavedModel ? 'Model: ' + aiSavedModel : 'Model belum diatur — isi Settings AI dulu';
+    renderAiMessages();
+  } catch { /* ignore */ }
+}
+document.getElementById('ai-fetch').addEventListener('click', async () => {
+  const err = document.getElementById('ai-err');
+  err.textContent = '';
+  aiMsg('Mengambil daftar model…');
+  try {
+    const r = await api('/api/ai/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: document.getElementById('ai-endpoint').value.trim(), apiKey: document.getElementById('ai-key').value }) });
+    const jj = await r.json();
+    if (!jj.models) { err.textContent = jj.error || 'Fetch models gagal'; aiMsg(''); return; }
+    const sel = document.getElementById('ai-model');
+    sel.innerHTML = '';
+    for (const m of jj.models) { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); }
+    if (aiSavedModel && jj.models.includes(aiSavedModel)) sel.value = aiSavedModel;
+    aiMsg(jj.models.length + ' model ditemukan' + (jj.models.length ? '' : ' — endpoint ini tidak mengembalikan daftar model, ketik manual saja'));
+  } catch (e) { err.textContent = e.message || 'Fetch models gagal'; aiMsg(''); }
+});
+document.getElementById('ai-save').addEventListener('click', async () => {
+  const err = document.getElementById('ai-err');
+  err.textContent = '';
+  const model = document.getElementById('ai-model-custom').value.trim() || document.getElementById('ai-model').value;
+  const r = await api('/api/ai/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: document.getElementById('ai-endpoint').value.trim(), apiKey: document.getElementById('ai-key').value, model }) });
+  const jj = await r.json();
+  if (jj.ok) {
+    aiSavedModel = jj.model;
+    document.getElementById('ai-key').value = '';
+    document.getElementById('ai-model-custom').value = '';
+    document.getElementById('ai-key-state').textContent = 'API key tersimpan (kosongkan kolom key bila tidak ingin mengubahnya)';
+    document.getElementById('ai-chat-model').textContent = 'Model: ' + jj.model;
+    aiMsg('Settings AI tersimpan');
+  } else { err.textContent = jj.error || 'Save gagal'; aiMsg(''); }
+});
+document.getElementById('ai-new').addEventListener('click', () => { aiMessages = []; aiSaveLocal(); renderAiMessages(); });
+document.getElementById('ai-stop').addEventListener('click', () => { if (aiAbort) aiAbort.abort(); });
+async function aiSend() {
+  const inp = document.getElementById('ai-input');
+  const text = inp.value.trim();
+  if (!text || aiAbort) return;
+  aiMessages.push({ role: 'user', content: text });
+  aiMessages.push({ role: 'assistant', content: '' });
+  inp.value = '';
+  renderAiMessages();
+  const bubbles = document.getElementById('ai-messages').children;
+  const ab = bubbles[bubbles.length - 1];
+  const sendBtn = document.getElementById('ai-send');
+  const stopBtn = document.getElementById('ai-stop');
+  sendBtn.disabled = true;
+  stopBtn.classList.remove('hidden');
+  aiAbort = new AbortController();
+  try {
+    const r = await fetch('/api/ai/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: aiMessages.slice(0, -1) }), signal: aiAbort.signal });
+    if (!r.ok) {
+      const jj = await r.json().catch(() => ({}));
+      throw new Error(jj.error || ('Chat gagal (' + r.status + ')'));
+    }
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let acc = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          let pj;
+          try { pj = JSON.parse(payload); } catch { continue; }
+          if (pj.error) throw new Error(pj.error);
+          const d = pj.data || pj;
+          const delta = (d.choices && d.choices[0] && d.choices[0].delta && d.choices[0].delta.content) || (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+          if (delta) { acc += delta; ab.textContent = acc; document.getElementById('ai-messages').scrollTop = document.getElementById('ai-messages').scrollHeight; }
+        }
+      }
+    }
+    aiMessages[aiMessages.length - 1].content = acc || '(tidak ada jawaban dari model)';
+    if (!acc) ab.textContent = aiMessages[aiMessages.length - 1].content;
+  } catch (e) {
+    if (e.name === 'AbortError') { aiMessages[aiMessages.length - 1].content += ' [dihentikan]'; }
+    else { aiMessages[aiMessages.length - 1].content = 'Error: ' + (e.message || 'Chat gagal'); }
+    ab.textContent = aiMessages[aiMessages.length - 1].content;
+  } finally {
+    aiSaveLocal();
+    aiAbort = null;
+    sendBtn.disabled = false;
+    stopBtn.classList.add('hidden');
+  }
+}
+document.getElementById('ai-send').addEventListener('click', aiSend);
+document.getElementById('ai-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSend(); } });
