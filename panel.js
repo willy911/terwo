@@ -1068,7 +1068,13 @@ async function apiAiModels(req, res) {
 // seperti File Manager. exec dibatasi 30 detik & output 20 KB, cwd default
 // PANEL_ROOT dan juga dikurung safePath.
 const AI_AGENT_SYSTEM = 'Kamu adalah AI agent yang berjalan di dalam panel Terwo di Termux/Android. Jawab dalam Bahasa Indonesia. Kamu punya tool: exec (jalankan perintah shell), read_file, write_file, list_dir. Semua file hanya di dalam home user. Gunakan tool untuk menyelesaikan tugas, jangan hanya menjelaskan. Setelah tool selesai, rangkum hasilnya dengan singkat. Bila tool ditolak user, jangan mengulang tool yang sama tanpa mengubah pendekatan.';
-const AI_AGENT_MAX_STEPS = 12;
+// Langkah agent SENGAJA tidak dibatasi (permintaan user 2026-10-28):
+// batas 12 dulu terlalu kecil untuk tugas panjang (exec dibatasi 30 detik,
+// jadi agent terpaksa polling sleep+cek dan tiap polling = 1 langkah).
+// Konsekuensi yang disadari: kalau model nyangkut mengulang perintah yang
+// sama terus, run tidak berhenti sendiri — kendalinya ada di user lewat
+// tombol Stop run di UI (SSE ditutup, run berhenti).
+// state.steps tetap dihitung (observasi) tapi tidak lagi menghentikan loop.
 const aiAgentRuns = new Map();
 let aiAgentSeq = 0;
 function aiToolDefs() {
@@ -1232,7 +1238,7 @@ function aiExecTool(name, args) {
   });
 }
 async function aiAgentLoop(res, state) {
-  while (state.steps < AI_AGENT_MAX_STEPS) {
+  while (true) {
     let toolCalls = state.queue || null;
     state.queue = null;
     if (!toolCalls) {
@@ -1264,7 +1270,6 @@ async function aiAgentLoop(res, state) {
       }
     }
   }
-  aiSse(res, { type: 'done', note: 'Batas ' + AI_AGENT_MAX_STEPS + ' langkah tercapai' });
 }
 async function apiAiAgent(req, res) {
   const cfg = loadAiConfig();

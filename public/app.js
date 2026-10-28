@@ -709,7 +709,10 @@ async function loadNginx() {
   try {
     const j = await (await api('/api/nginx/status')).json();
     document.getElementById('nginx-status').innerHTML = j.running ? badgeOk('Nginx running') : badgeOff('Nginx stopped');
-  } catch { /* ignore */ }
+  } catch {
+    const el = document.getElementById('nginx-status');
+    if (el) el.innerHTML = badgeWarn('Gagal memuat status');
+  }
   try {
     const j = await (await api('/api/nginx/proxies')).json();
     const el = document.getElementById('px-list');
@@ -1025,24 +1028,35 @@ async function loadPmaDomain() {
     }
     document.getElementById('pmad-toggle').textContent = j.enabled ? 'Nonaktifkan Domain phpMyAdmin' : 'Aktifkan Domain phpMyAdmin';
     refreshIcons();
-  } catch { /* ignore */ }
+  } catch {
+    const st = document.getElementById('pmad-status');
+    if (st) st.innerHTML = badgeWarn('Gagal memuat status — panel tidak terjangkau?');
+  }
 }
 document.getElementById('pmad-toggle').addEventListener('click', async () => {
   const err = document.getElementById('pmad-err'); err.textContent = '';
-  if (pmadEnabled) {
-    if (!confirm('Nonaktifkan domain phpMyAdmin? Route + DNS-nya akan dihapus dari Cloudflare, dan login otomatis lokal kembali aktif.')) return;
-    const r = await api('/api/pma-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
-    const j = await r.json();
-    if (!j.ok && j.error) err.textContent = j.error;
-  } else {
-    // Peringatan eksplisit: URL publik + auto-login tidak boleh bersamaan.
-    if (!(await confirmDialog({ title: 'Aktifkan domain phpMyAdmin?', message: 'Subdomain ini PUBLIK di internet. Selama domain aktif, login otomatis phpMyAdmin DIMATIKAN — dari perangkat lain kamu harus login pakai user/password MySQL. Pastikan password MySQL kuat sebelum melanjutkan.', okText: 'Aktifkan', danger: true, icon: 'globe' }))) return;
-    const sub = document.getElementById('pmad-subdomain').value.trim();
-    const r = await api('/api/pma-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, subdomain: sub }) });
-    const j = await r.json();
-    if (!j.ok && j.error) err.textContent = j.error;
+  const btn = document.getElementById('pmad-toggle');
+  btn.disabled = true; btn.textContent = 'Memproses…';
+  try {
+    if (pmadEnabled) {
+      if (!confirm('Nonaktifkan domain phpMyAdmin? Route + DNS-nya akan dihapus dari Cloudflare, dan login otomatis lokal kembali aktif.')) return;
+      const r = await api('/api/pma-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+      const j = await r.json();
+      if (!j.ok && j.error) err.textContent = j.error;
+    } else {
+      // Peringatan eksplisit: URL publik + auto-login tidak boleh bersamaan.
+      if (!(await confirmDialog({ title: 'Aktifkan domain phpMyAdmin?', message: 'Subdomain ini PUBLIK di internet. Selama domain aktif, login otomatis phpMyAdmin DIMATIKAN — dari perangkat lain kamu harus login pakai user/password MySQL. Pastikan password MySQL kuat sebelum melanjutkan.', okText: 'Aktifkan', danger: true, icon: 'globe' }))) return;
+      const sub = document.getElementById('pmad-subdomain').value.trim();
+      const r = await api('/api/pma-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, subdomain: sub }) });
+      const j = await r.json();
+      if (!j.ok && j.error) err.textContent = j.error;
+    }
+  } catch (e) { err.textContent = 'Gagal menghubungi panel: ' + e.message; }
+  finally {
+    btn.disabled = false;
+    btn.textContent = pmadEnabled ? 'Nonaktifkan Domain phpMyAdmin' : 'Aktifkan Domain phpMyAdmin';
+    loadPmaDomain(); loadPma();
   }
-  loadPmaDomain(); loadPma();
 });
 // Open ala aaPanel: selalu mengarah ke phpMyAdmin (bukan browser internal).
 // Browser internal tetap ada lewat klik NAMA database (loadDbTables).
@@ -1366,7 +1380,10 @@ async function loadCron() {
     const j = await (await api('/api/cron/status')).json();
     document.getElementById('cron-status').innerHTML = j.running ? badgeOk('crond running') : badgeOff('crond stopped');
     refreshIcons();
-  } catch { /* ignore */ }
+  } catch {
+    const el = document.getElementById('cron-status');
+    if (el) el.innerHTML = badgeWarn('Gagal memuat status');
+  }
   try {
     const j = await (await api('/api/cron/jobs')).json();
     const el = document.getElementById('cj-list');
@@ -1440,7 +1457,10 @@ async function loadCf() {
     document.getElementById('cf-token').value = '';
     document.getElementById('cf-status').textContent = !j.configured ? 'Belum dikonfigurasi'
       : (j.tunnelReady ? ('Siap — tunnel ' + (j.tunnelId || '') + ' sudah dibuat') : 'Tersimpan — klik Setup & Uji untuk membuat tunnel');
-  } catch { /* ignore */ }
+  } catch {
+    const el = document.getElementById('cf-status');
+    if (el) el.textContent = 'Gagal memuat konfigurasi — buka ulang tab Settings.';
+  }
 }
 document.getElementById('cf-save').addEventListener('click', async () => {
   const err = document.getElementById('cf-err'); err.textContent = '';
@@ -1504,9 +1524,22 @@ async function loadTunnel() {
     const showUrl = j.url || (j.mode === 'token' && j.hostname ? 'https://' + j.hostname : '');
     urlEl.innerHTML = showUrl ? '<a class="font-mono text-[13px] text-accent-h underline" target="_blank" rel="noopener" href="' + esc(showUrl) + '">' + esc(showUrl) + '</a>' : '<span class="muted text-sm">Belum ada URL publik</span>';
     urlEl.dataset.url = showUrl;
-    document.getElementById('tun-log').textContent = j.logs || '—';
+    // Log kosong jangan tampil sebagai '—' tanpa penjelasan: bedakan
+    // tunnel yang sedang starting (belum ada output) dengan yang mati.
+    document.getElementById('tun-log').textContent = j.logs
+      || (j.running ? 'Menunggu output cloudflared…' : 'Tunnel belum dijalankan — nyalakan saklar Auto tunneling.');
     refreshIcons();
-  } catch { /* ignore */ }
+  } catch {
+    // Dulu: gagal fetch = status mentok 'checking…' tanpa penjelasan.
+    // Sekarang: tampilkan alasannya; log lama dipertahankan, log kosong
+    // diberi petunjuk (bukan dibiarkan '—').
+    const st = document.getElementById('tun-status');
+    if (st) st.innerHTML = badgeWarn('Gagal memuat status — panel tidak terjangkau?');
+    const logEl = document.getElementById('tun-log');
+    if (logEl && (!logEl.textContent || logEl.textContent === '—')) {
+      logEl.textContent = 'Gagal memuat log — panel tidak terjangkau. Buka ulang tab ini.';
+    }
+  }
 }
 document.getElementById('tun-mode').addEventListener('change', (e) => {
   document.getElementById('tun-token-row').style.display = (e.target.value === 'token') ? '' : 'none';
@@ -1515,21 +1548,26 @@ document.getElementById('tun-mode').addEventListener('change', (e) => {
 document.getElementById('tun-switch').addEventListener('change', async (e) => {
   const err = document.getElementById('tun-err');
   err.textContent = '';
-  if (e.target.checked) {
-    const r = await api('/api/tunnel/start', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: document.getElementById('tun-mode').value,
-        targetPort: document.getElementById('tun-port').value.trim(),
-        token: document.getElementById('tun-token').value.trim(),
-        hostname: document.getElementById('tun-host').value.trim() }),
-    });
-    const j = await r.json();
-    if (!j.ok && j.error) { err.textContent = j.error; e.target.checked = false; }
-    else document.getElementById('tun-token').value = '';
-  } else {
-    await api('/api/tunnel/stop', { method: 'POST' }).catch(() => {});
-  }
-  loadTunnel();
+  // Dulu: gagal jaringan = unhandled rejection, saklar tetap ON padahal
+  // tunnel tidak nyala, tanpa pesan apa pun sampai poll 5 detik berikutnya.
+  e.target.disabled = true;
+  try {
+    if (e.target.checked) {
+      const r = await api('/api/tunnel/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: document.getElementById('tun-mode').value,
+          targetPort: document.getElementById('tun-port').value.trim(),
+          token: document.getElementById('tun-token').value.trim(),
+          hostname: document.getElementById('tun-host').value.trim() }),
+      });
+      const j = await r.json();
+      if (!j.ok && j.error) { err.textContent = j.error; e.target.checked = false; }
+      else document.getElementById('tun-token').value = '';
+    } else {
+      await api('/api/tunnel/stop', { method: 'POST' }).catch(() => {});
+    }
+  } catch (ex) { err.textContent = 'Gagal menghubungi panel: ' + ex.message; e.target.checked = false; }
+  finally { e.target.disabled = false; loadTunnel(); }
 });
 // Salin teks yang tahan di HP: clipboard API modern dulu (butuh secure
 // context), lalu fallback textarea dengan focus + setSelectionRange (tanpa
@@ -1589,22 +1627,35 @@ async function loadPanelDomain() {
     }
     document.getElementById('pd-toggle').textContent = j.enabled ? 'Nonaktifkan Domain Panel' : 'Aktifkan Domain Panel';
     refreshIcons();
-  } catch { /* ignore */ }
+  } catch {
+    const st = document.getElementById('pd-status');
+    if (st) st.innerHTML = badgeWarn('Gagal memuat status — panel tidak terjangkau?');
+  }
 }
 document.getElementById('pd-toggle').addEventListener('click', async () => {
   const err = document.getElementById('pd-err'); err.textContent = '';
-  if (pdEnabled) {
-    if (!confirm('Nonaktifkan domain panel? Route + DNS-nya akan dihapus dari Cloudflare.')) return;
-    const r = await api('/api/panel-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
-    const j = await r.json();
-    if (!j.ok && j.error) err.textContent = j.error;
-  } else {
-    const sub = document.getElementById('pd-subdomain').value.trim();
-    const r = await api('/api/panel-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, subdomain: sub }) });
-    const j = await r.json();
-    if (!j.ok && j.error) err.textContent = j.error;
+  const btn = document.getElementById('pd-toggle');
+  // Dulu: request Cloudflare bisa makan waktu belasan detik tanpa tanda
+  // apa pun, dan gagal jaringan = diam total (unhandled rejection).
+  btn.disabled = true; btn.textContent = 'Memproses…';
+  try {
+    if (pdEnabled) {
+      if (!confirm('Nonaktifkan domain panel? Route + DNS-nya akan dihapus dari Cloudflare.')) return;
+      const r = await api('/api/panel-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+      const j = await r.json();
+      if (!j.ok && j.error) err.textContent = j.error;
+    } else {
+      const sub = document.getElementById('pd-subdomain').value.trim();
+      const r = await api('/api/panel-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, subdomain: sub }) });
+      const j = await r.json();
+      if (!j.ok && j.error) err.textContent = j.error;
+    }
+  } catch (e) { err.textContent = 'Gagal menghubungi panel: ' + e.message; }
+  finally {
+    btn.disabled = false;
+    btn.textContent = pdEnabled ? 'Nonaktifkan Domain Panel' : 'Aktifkan Domain Panel';
+    loadPanelDomain();
   }
-  loadPanelDomain();
 });
 
 // ---------- backup ----------
