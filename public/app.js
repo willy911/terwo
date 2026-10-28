@@ -1851,7 +1851,7 @@ function renderAiMessages() {
     const d = document.createElement('div');
     d.className = 'rounded-xl px-3 py-2 text-sm whitespace-pre-wrap';
     if (m.role === 'user') { d.style.cssText = 'align-self:flex-end;background:var(--accent);color:#fff;max-width:85%'; }
-    else { d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%'; }
+    else { d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%;border:1px solid var(--border)'; }
     if (m.role === 'assistant') d.innerHTML = aiRenderMarkdown(m.content);
     else d.textContent = m.content;
     el.appendChild(d);
@@ -1924,6 +1924,7 @@ async function aiSend() {
   renderAiMessages();
   const bubbles = document.getElementById('ai-messages').children;
   const ab = bubbles[bubbles.length - 1];
+  ab.innerHTML = AI_THINKING_HTML;
   const sendBtn = document.getElementById('ai-send');
   const stopBtn = document.getElementById('ai-stop');
   sendBtn.disabled = true;
@@ -2069,13 +2070,34 @@ function aiAppendToolBubble(ev) {
 }
 let aiCurAssistantBubble = null;
 let aiRunSegments = [];
+// Indikator "AI sedang berpikir": tiga titik memantul di gelembung asisten.
+// Chat biasa: titik ditaruh di dalam gelembung jawaban lalu digantikan token
+// pertama (textContent menimpa innerHTML). Mode Agent: gelembung thinking
+// terpisah yang dihapus begitu event stream pertama tiba.
+const AI_THINKING_HTML = '<span class="ai-thinking"><span></span><span></span><span></span></span>';
+let aiThinkingBubble = null;
+function aiShowThinking() {
+  aiHideThinking();
+  const el = document.getElementById('ai-messages');
+  const d = document.createElement('div');
+  d.className = 'rounded-xl px-3 py-2 text-sm';
+  d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%;border:1px solid var(--border)';
+  d.innerHTML = AI_THINKING_HTML;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+  aiThinkingBubble = d;
+  return d;
+}
+function aiHideThinking() {
+  if (aiThinkingBubble) { aiThinkingBubble.remove(); aiThinkingBubble = null; }
+}
 function aiAppendBubble(role, content) {
   const el = document.getElementById('ai-messages');
   const d = document.createElement('div');
   d.className = 'rounded-xl px-3 py-2 text-sm whitespace-pre-wrap';
   if (role === 'user') d.style.cssText = 'align-self:flex-end;background:var(--accent);color:#fff;max-width:85%';
   else if (role === 'tool') d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%;border:1px dashed var(--border)';
-  else d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%';
+  else d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%;border:1px solid var(--border)';
   if (role === 'assistant') d.innerHTML = aiRenderMarkdown(content);
   else d.textContent = content;
   el.appendChild(d);
@@ -2099,6 +2121,7 @@ async function aiReadAgentStream(r, runTexts) {
         if (!payload || payload === '[DONE]') continue;
         let ev;
         try { ev = JSON.parse(payload); } catch { continue; }
+        aiHideThinking();
         if (ev.type === 'text') {
           const content = ev.content || '';
           runTexts.push(content);
@@ -2170,6 +2193,7 @@ async function aiSendAgent() {
   const runTexts = [];
   aiCurAssistantBubble = null;
   aiRunSegments = [];
+  aiShowThinking();
   try {
     const r = await fetch('/api/ai/agent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: aiMessages }), signal: aiAbort.signal });
     if (!r.ok) { const jj = await r.json().catch(() => ({})); throw new Error(jj.error || ('Agent gagal (' + r.status + ')')); }
@@ -2178,6 +2202,7 @@ async function aiSendAgent() {
     if (e.name === 'AbortError' || e.name === 'AgentStopped') aiAppendBubble('assistant', '[agent dihentikan]');
     else aiAppendBubble('assistant', 'Error: ' + (e.message || 'Agent gagal'));
   } finally {
+    aiHideThinking();
     for (const s of aiRunSegments) if (s.trim()) aiMessages.push({ role: 'assistant', content: s });
     aiSaveLocal();
     aiAbort = null;
