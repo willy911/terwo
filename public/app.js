@@ -1447,8 +1447,13 @@ async function loadTunnel() {
     const hostEl = document.getElementById('tun-host');
     if (j.hostname && document.activeElement !== hostEl) hostEl.value = j.hostname;
     if (j.targetPort) document.getElementById('tun-port').placeholder = 'panel ini (' + j.targetPort + ')';
+    const tokEl = document.getElementById('tun-token');
+    if (tokEl) {
+      if (!tokEl.dataset.origPh) tokEl.dataset.origPh = tokEl.placeholder;
+      if (document.activeElement !== tokEl) tokEl.placeholder = j.hasToken ? 'Token tersimpan ✓ (kosongkan = pakai yang tersimpan)' : tokEl.dataset.origPh;
+    }
     const st = document.getElementById('tun-status');
-    st.innerHTML = j.running ? (j.url ? badgeOk('Tunnel aktif') : badgeWarn('Tunnel starting…')) : badgeOff('Tunnel mati');
+    st.innerHTML = j.running ? ((j.url || j.connected) ? badgeOk('Tunnel aktif') : badgeWarn('Tunnel starting…')) : badgeOff('Tunnel mati');
     const urlEl = document.getElementById('tun-url');
     const showUrl = j.url || (j.mode === 'token' && j.hostname ? 'https://' + j.hostname : '');
     urlEl.innerHTML = showUrl ? '<a class="font-mono text-[13px] text-accent-h underline" target="_blank" rel="noopener" href="' + esc(showUrl) + '">' + esc(showUrl) + '</a>' : '<span class="muted text-sm">Belum ada URL publik</span>';

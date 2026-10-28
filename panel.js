@@ -2090,6 +2090,7 @@ function saveTunnelCfg(c) {
 }
 let tunnelCfg = loadTunnelCfg();
 let tunnelProc = null, tunnelUrl = '', tunnelLogs = [], tunnelStartedAt = 0;
+let tunnelConnected = false; // true sejak log "Registered tunnel connection" sampai tunnel berhenti
 let tunnelStopping = false, tunnelRestartTimer = null;
 function tunnelPushLog(line) {
   tunnelLogs.push(line);
@@ -2098,7 +2099,7 @@ function tunnelPushLog(line) {
 function tunnelPublic() {
   return { running: !!tunnelProc, enabled: tunnelCfg.enabled, mode: tunnelCfg.mode,
     targetPort: tunnelCfg.targetPort, hostname: tunnelCfg.hostname,
-    hasToken: !!tunnelCfg.token, url: tunnelUrl,
+    hasToken: !!tunnelCfg.token, url: tunnelUrl, connected: tunnelConnected,
     startedAt: tunnelStartedAt, logs: tunnelLogs.join('').slice(-4000) };
 }
 async function startTunnel(cfg) {
@@ -2120,7 +2121,7 @@ async function startTunnel(cfg) {
   saveTunnelCfg(tunnelCfg);
   tunnelStopping = false;
   if (tunnelRestartTimer) { clearTimeout(tunnelRestartTimer); tunnelRestartTimer = null; }
-  tunnelUrl = ''; tunnelStartedAt = Date.now();
+  tunnelUrl = ''; tunnelConnected = false; tunnelStartedAt = Date.now();
   const child = spawn('cloudflared', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   tunnelProc = child;
   let buf = '';
@@ -2130,6 +2131,7 @@ async function startTunnel(cfg) {
     buf = lines.pop();
     for (const line of lines) {
       tunnelPushLog(line + '\n');
+      if (line.includes('Registered tunnel connection')) tunnelConnected = true;
       if (!tunnelUrl) {
         const m = line.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
         if (m) tunnelUrl = m[0];
@@ -2140,12 +2142,12 @@ async function startTunnel(cfg) {
   child.stderr.on('data', onData);
   child.on('error', (e) => {
     tunnelPushLog('--- tunnel failed to start: ' + e.message + ' ---\n');
-    tunnelProc = null;
+    tunnelProc = null; tunnelConnected = false;
     tunnelCfg.enabled = false; saveTunnelCfg(tunnelCfg);
   });
   child.on('exit', (code) => {
     tunnelPushLog('--- tunnel stopped (exit ' + code + ') ---\n');
-    tunnelProc = null;
+    tunnelProc = null; tunnelConnected = false;
     // Auto-reconnect: kalau saklar masih ON (bukan stop manual), nyalakan lagi.
     if (!tunnelStopping && tunnelCfg.enabled && !tunnelRestartTimer) {
       tunnelRestartTimer = setTimeout(() => {
@@ -2163,7 +2165,7 @@ function stopTunnel() {
   if (tunnelRestartTimer) { clearTimeout(tunnelRestartTimer); tunnelRestartTimer = null; }
   tunnelCfg.enabled = false; saveTunnelCfg(tunnelCfg);
   if (tunnelProc) { try { tunnelProc.kill(); } catch { /* ignore */ } tunnelProc = null; }
-  tunnelUrl = '';
+  tunnelUrl = ''; tunnelConnected = false;
   tunnelPushLog('--- tunnel stopped by user ---\n');
   return tunnelPublic();
 }
