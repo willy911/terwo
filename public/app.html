@@ -260,12 +260,25 @@
         <label class="lbl-check"><input id="ai-agent-mode" type="checkbox" class="h-4 w-4 accent-accent">Mode Agent</label>
         <button id="ai-always-allow-ind" class="btn-ghost btn-sm hidden" title="Klik untuk mematikan Always Allow">Always Allow: ON</button>
         <button id="ai-new" class="btn-ghost btn-sm"><i data-lucide="plus" class="h-4 w-4"></i>New Chat</button>
+        <button id="ai-sessions-toggle" class="btn-ghost btn-sm md:hidden"><i data-lucide="list" class="h-4 w-4"></i>Sesi</button>
         <button id="ai-stop" class="btn-ghost btn-sm hidden"><i data-lucide="square" class="h-4 w-4"></i>Stop</button>
       </div>
       <p class="hint">Mode Agent: AI boleh memanggil tool — baca file/direktori jalan otomatis, tulis file &amp; eksekusi perintah selalu minta Allow dulu (klik Always Allow di bubble approval supaya selanjutnya jalan otomatis sampai halaman di-reload). Tool hanya berlaku di dalam home user.</p>
-      <div id="ai-messages" class="flex flex-col gap-2" style="max-height:55vh;overflow-y:auto"></div>
-      <textarea id="ai-input" class="inp mt-3" rows="2" placeholder="Tulis pesan… (Enter = kirim, Shift+Enter = baris baru)"></textarea>
-      <button id="ai-send" class="btn btn-sm mt-2"><i data-lucide="send" class="h-4 w-4"></i>Send</button>
+      <div class="flex gap-3">
+        <div id="ai-sessions" class="hidden md:flex flex-col gap-1 w-60 shrink-0" style="max-height:55vh;overflow-y:auto">
+          <div class="flex items-center justify-between px-1">
+            <span class="text-sm font-semibold">Sesi</span>
+            <button id="ai-sessions-close" class="btn-ghost btn-sm md:hidden">✕</button>
+          </div>
+          <div id="ai-session-list" class="flex flex-col gap-1"></div>
+        </div>
+        <div class="flex-1 min-w-0 flex flex-col">
+          <div id="ai-messages" class="flex flex-col gap-2" style="max-height:55vh;overflow-y:auto"></div>
+          <textarea id="ai-input" class="inp mt-3" rows="2" placeholder="Tulis pesan… (Enter = kirim, Shift+Enter = baris baru)"></textarea>
+          <button id="ai-send" class="btn btn-sm mt-2"><i data-lucide="send" class="h-4 w-4"></i>Send</button>
+        </div>
+      </div>
+      <div id="ai-sessions-backdrop" class="hidden fixed inset-0 z-40" style="background:rgba(0,0,0,0.5)"></div>
     </div>
   </section>
 

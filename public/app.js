@@ -1717,10 +1717,128 @@ function aiSetAlwaysAllow(v) {
   const ind = document.getElementById('ai-always-allow-ind');
   if (ind) ind.classList.toggle('hidden', !aiAlwaysAllow);
 }
-try { aiMessages = JSON.parse(localStorage.getItem('terwo-ai-chat') || '[]').filter((m) => m && (m.role === 'user' || m.role === 'assistant')); } catch { aiMessages = []; }
 let aiSavedModel = '';
 let aiAbort = null;
-function aiSaveLocal() { try { localStorage.setItem('terwo-ai-chat', JSON.stringify(aiMessages.slice(-100))); } catch {} }
+// ---------- Sesi chat AI (seperti daftar chat di samping) ----------
+// Satu sesi = satu percakapan (pesan user/asisten per gelembung).
+// Disimpan di localStorage 'terwo-ai-sessions'; riwayat tunggal lama
+// ('terwo-ai-chat') dimigrasikan sekali menjadi sesi pertama.
+let aiSessions = [];
+let aiCurrentSessionId = null;
+function aiSessionTitleFor(messages) {
+  const first = (messages || []).find((m) => m.role === 'user');
+  if (!first) return 'Chat baru';
+  const t = String(first.content || '').replace(/\s+/g, ' ').trim();
+  return t.length > 40 ? t.slice(0, 40) + '…' : t;
+}
+function aiNewSessionRaw() {
+  const now = Date.now();
+  const s = { id: 's' + now + Math.random().toString(36).slice(2, 7), title: 'Chat baru', createdAt: now, updatedAt: now, messages: [] };
+  aiSessions.unshift(s);
+  return s;
+}
+function aiSaveLocal() {
+  try {
+    const cur = aiSessions.find((s) => s.id === aiCurrentSessionId);
+    if (cur) {
+      cur.messages = aiMessages;
+      cur.updatedAt = Date.now();
+      if (cur.title === 'Chat baru') cur.title = aiSessionTitleFor(aiMessages);
+    }
+    localStorage.setItem('terwo-ai-sessions', JSON.stringify({ sessions: aiSessions.slice(0, 50), currentId: aiCurrentSessionId }));
+  } catch {}
+}
+function aiLoadSessions() {
+  try {
+    const raw = localStorage.getItem('terwo-ai-sessions');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.sessions) && parsed.sessions.length) {
+        aiSessions = parsed.sessions.filter((s) => s && s.id && Array.isArray(s.messages));
+        aiCurrentSessionId = (parsed.currentId && aiSessions.some((s) => s.id === parsed.currentId)) ? parsed.currentId : aiSessions[0].id;
+        aiMessages = aiSessions.find((s) => s.id === aiCurrentSessionId).messages;
+        return;
+      }
+    }
+  } catch {}
+  let old = [];
+  try { old = JSON.parse(localStorage.getItem('terwo-ai-chat') || '[]').filter((m) => m && (m.role === 'user' || m.role === 'assistant')); } catch {}
+  if (old.length) {
+    const now = Date.now();
+    aiSessions = [{ id: 's' + now, title: aiSessionTitleFor(old), createdAt: now, updatedAt: now, messages: old }];
+    aiCurrentSessionId = aiSessions[0].id;
+    aiMessages = old;
+  } else {
+    aiCurrentSessionId = aiNewSessionRaw().id;
+    aiMessages = aiSessions[0].messages;
+  }
+  aiSaveLocal();
+}
+function aiRenderSessions() {
+  const list = document.getElementById('ai-session-list');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const s of aiSessions) {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1 px-2 py-1.5 text-sm cursor-pointer';
+    row.style.cssText = (s.id === aiCurrentSessionId ? 'background:var(--surface2);border:1px solid var(--border)' : 'border:1px solid transparent') + ';border-radius:8px';
+    const label = document.createElement('span');
+    label.className = 'flex-1';
+    label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    label.textContent = s.title;
+    const del = document.createElement('button');
+    del.className = 'btn-ghost btn-sm';
+    del.textContent = '×';
+    del.title = 'Hapus sesi';
+    del.onclick = (e) => { e.stopPropagation(); aiDeleteSession(s.id); };
+    row.append(label, del);
+    row.onclick = () => { aiSwitchSession(s.id); aiCloseSessionsDrawer(); };
+    list.appendChild(row);
+  }
+}
+function aiSwitchSession(id) {
+  const s = aiSessions.find((x) => x.id === id);
+  if (!s) return;
+  aiSaveLocal();
+  aiCurrentSessionId = id;
+  aiMessages = s.messages;
+  renderAiMessages();
+  aiSaveLocal();
+}
+function aiCreateSession() {
+  aiSaveLocal();
+  const s = aiNewSessionRaw();
+  aiCurrentSessionId = s.id;
+  aiMessages = s.messages;
+  renderAiMessages();
+  aiCloseSessionsDrawer();
+  aiSaveLocal();
+}
+function aiDeleteSession(id) {
+  aiSessions = aiSessions.filter((s) => s.id !== id);
+  if (aiCurrentSessionId === id) {
+    if (!aiSessions.length) aiNewSessionRaw();
+    aiCurrentSessionId = aiSessions[0].id;
+    aiMessages = aiSessions[0].messages;
+    renderAiMessages();
+  }
+  aiRenderSessions();
+  aiSaveLocal();
+}
+function aiOpenSessionsDrawer() {
+  const sb = document.getElementById('ai-sessions');
+  const bd = document.getElementById('ai-sessions-backdrop');
+  if (!sb || window.innerWidth >= 768) return;
+  sb.style.cssText = 'position:fixed;top:0;bottom:0;left:0;z-index:50;width:280px;max-width:85vw;overflow-y:auto;padding:12px;background:var(--surface2);display:flex;flex-direction:column;gap:4px;box-shadow:2px 0 16px rgba(0,0,0,0.4)';
+  if (bd) bd.classList.remove('hidden');
+}
+function aiCloseSessionsDrawer() {
+  const sb = document.getElementById('ai-sessions');
+  const bd = document.getElementById('ai-sessions-backdrop');
+  if (sb) sb.style.cssText = '';
+  if (bd) bd.classList.add('hidden');
+}
+aiLoadSessions();
 function renderAiMessages() {
   const el = document.getElementById('ai-messages');
   el.innerHTML = '';
@@ -1729,10 +1847,12 @@ function renderAiMessages() {
     d.className = 'rounded-xl px-3 py-2 text-sm whitespace-pre-wrap';
     if (m.role === 'user') { d.style.cssText = 'align-self:flex-end;background:var(--accent);color:#fff;max-width:85%'; }
     else { d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%'; }
-    d.textContent = m.content;
+    if (m.role === 'assistant') d.innerHTML = aiRenderMarkdown(m.content);
+    else d.textContent = m.content;
     el.appendChild(d);
   }
   el.scrollTop = el.scrollHeight;
+  aiRenderSessions();
 }
 function aiMsg(text, isErr) {
   const el = document.getElementById('ai-msg');
@@ -1782,7 +1902,10 @@ document.getElementById('ai-save').addEventListener('click', async () => {
     aiMsg('Settings AI tersimpan');
   } else { err.textContent = jj.error || 'Save gagal'; aiMsg(''); }
 });
-document.getElementById('ai-new').addEventListener('click', () => { aiMessages = []; aiSaveLocal(); renderAiMessages(); });
+document.getElementById('ai-new').addEventListener('click', () => aiCreateSession());
+document.getElementById('ai-sessions-toggle').addEventListener('click', aiOpenSessionsDrawer);
+document.getElementById('ai-sessions-close').addEventListener('click', aiCloseSessionsDrawer);
+document.getElementById('ai-sessions-backdrop').addEventListener('click', aiCloseSessionsDrawer);
 document.getElementById('ai-always-allow-ind').addEventListener('click', () => aiSetAlwaysAllow(false));
 document.getElementById('ai-stop').addEventListener('click', () => { if (aiAbort) aiAbort.abort(); });
 async function aiSend() {
@@ -1832,7 +1955,8 @@ async function aiSend() {
       }
     }
     aiMessages[aiMessages.length - 1].content = acc || '(tidak ada jawaban dari model)';
-    if (!acc) ab.textContent = aiMessages[aiMessages.length - 1].content;
+    if (acc) ab.innerHTML = aiRenderMarkdown(acc);
+    else ab.textContent = aiMessages[aiMessages.length - 1].content;
   } catch (e) {
     if (e.name === 'AbortError') { aiMessages[aiMessages.length - 1].content += ' [dihentikan]'; }
     else { aiMessages[aiMessages.length - 1].content = 'Error: ' + (e.message || 'Chat gagal'); }
@@ -1848,6 +1972,98 @@ document.getElementById('ai-send').addEventListener('click', aiSend);
 document.getElementById('ai-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSend(); } });
 
 // ---------- AI Agent mode ----------
+// Render markdown ringan untuk jawaban AI (aman: HTML di-escape dulu).
+// Mendukung: blok kode ```, `kode`, **tebal**, *miring*, [tautan](http...),
+// heading #, ##, ###, daftar - / *, dan tabel | ... |.
+function aiInline(md) {
+  const codes = [];
+  let s = String(md).replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s"]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent)">$1</a>');
+  s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => '<code style="background:rgba(0,0,0,0.25);padding:0 3px;border-radius:4px">' + codes[+i] + '</code>');
+  return s;
+}
+function aiRenderTable(rows) {
+  const cells = (r) => r.replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+  let head = cells(rows[0]);
+  let body = rows.slice(1);
+  if (body.length && cells(body[0]).every((c) => /^:?-{2,}:?$/.test(c))) body = body.slice(1);
+  const th = head.map((c) => '<th style="border:1px solid var(--border);padding:4px 8px;text-align:left">' + aiInline(c) + '</th>').join('');
+  const trs = body.map((r) => '<tr>' + cells(r).map((c) => '<td style="border:1px solid var(--border);padding:4px 8px">' + aiInline(c) + '</td>').join('') + '</tr>').join('');
+  return '<table style="border-collapse:collapse;margin:6px 0;width:100%"><thead><tr>' + th + '</tr></thead><tbody>' + trs + '</tbody></table>';
+}
+function aiRenderLines(part) {
+  const lines = String(part).split('\n');
+  let out = '';
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t) continue;
+    if (t.startsWith('|')) {
+      const rows = [];
+      while (i < lines.length && lines[i].trim().startsWith('|')) { rows.push(lines[i].trim()); i++; }
+      i--;
+      out += aiRenderTable(rows);
+      continue;
+    }
+    const hm = t.match(/^(#{1,3})\s+(.*)$/);
+    if (hm) { const sz = hm[1].length === 1 ? 16 : hm[1].length === 2 ? 15 : 14; out += '<div style="font-weight:700;font-size:' + sz + 'px;margin-top:6px">' + aiInline(hm[2]) + '</div>'; continue; }
+    const lm = t.match(/^[-*]\s+(.*)$/);
+    if (lm) { out += '<div>• ' + aiInline(lm[1]) + '</div>'; continue; }
+    out += '<div>' + aiInline(t) + '</div>';
+  }
+  return out;
+}
+function aiRenderMarkdown(src) {
+  const text = esc(String(src || ''));
+  const parts = text.split('```');
+  let out = '';
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      let code = parts[i];
+      const nl = code.indexOf('\n');
+      if (nl >= 0 && /^[a-zA-Z0-9_+-]+$/.test(code.slice(0, nl).trim())) code = code.slice(nl + 1);
+      out += '<pre style="background:rgba(0,0,0,0.25);padding:8px;border-radius:8px;overflow:auto;font-size:12.5px;white-space:pre-wrap">' + code + '</pre>';
+    } else {
+      out += aiRenderLines(parts[i]);
+    }
+  }
+  return out;
+}
+// Gelembung tool yang ringkas: satu baris ringkasan, detail mentah
+// (argumen + hasil) tersembunyi di balik <details> sampai user membukanya.
+function aiToolSummary(args, tool) {
+  const a = args || {};
+  if (tool === 'exec' && a.command) return a.command;
+  if (a.path) return a.path;
+  return JSON.stringify(a);
+}
+function aiAppendToolBubble(ev) {
+  const el = document.getElementById('ai-messages');
+  const d = document.createElement('div');
+  d.className = 'rounded-xl px-3 py-2 text-sm';
+  d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%;border:1px dashed var(--border)';
+  const sum = document.createElement('div');
+  sum.className = 'whitespace-pre-wrap';
+  const s = '🔧 ' + ev.tool + ' ' + aiToolSummary(ev.args, ev.tool);
+  sum.textContent = s.length > 100 ? s.slice(0, 100) + '…' : s;
+  const det = document.createElement('details');
+  det.className = 'mt-1';
+  const detSum = document.createElement('summary');
+  detSum.className = 'cursor-pointer text-[12.5px] opacity-70';
+  detSum.textContent = 'Lihat detail';
+  const pre = document.createElement('pre');
+  pre.className = 'whitespace-pre-wrap font-mono text-[12.5px] mt-1 overflow-auto';
+  pre.style.maxHeight = '256px';
+  pre.textContent = JSON.stringify(ev.args || {}, null, 2) + '\n--- hasil ---\n' + String(ev.result || '').slice(0, 4000);
+  det.append(detSum, pre);
+  d.append(sum, det);
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+  return d;
+}
+let aiCurAssistantBubble = null;
+let aiRunSegments = [];
 function aiAppendBubble(role, content) {
   const el = document.getElementById('ai-messages');
   const d = document.createElement('div');
@@ -1855,7 +2071,8 @@ function aiAppendBubble(role, content) {
   if (role === 'user') d.style.cssText = 'align-self:flex-end;background:var(--accent);color:#fff;max-width:85%';
   else if (role === 'tool') d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%;border:1px dashed var(--border)';
   else d.style.cssText = 'align-self:flex-start;background:var(--surface2);max-width:85%';
-  d.textContent = content;
+  if (role === 'assistant') d.innerHTML = aiRenderMarkdown(content);
+  else d.textContent = content;
   el.appendChild(d);
   el.scrollTop = el.scrollHeight;
   return d;
@@ -1877,9 +2094,17 @@ async function aiReadAgentStream(r, runTexts) {
         if (!payload || payload === '[DONE]') continue;
         let ev;
         try { ev = JSON.parse(payload); } catch { continue; }
-        if (ev.type === 'text') { runTexts.push(ev.content || ''); aiAppendBubble('assistant', ev.content || ''); }
-        else if (ev.type === 'tool') { aiAppendBubble('tool', '🔧 ' + ev.tool + ' ' + JSON.stringify(ev.args || {}) + '\n' + String(ev.result || '').slice(0, 1000)); }
+        if (ev.type === 'text') {
+          const content = ev.content || '';
+          runTexts.push(content);
+          if (!aiCurAssistantBubble) { aiCurAssistantBubble = aiAppendBubble('assistant', ''); aiRunSegments.push(''); }
+          aiRunSegments[aiRunSegments.length - 1] += content;
+          aiCurAssistantBubble.innerHTML = aiRenderMarkdown(aiRunSegments[aiRunSegments.length - 1]);
+          document.getElementById('ai-messages').scrollTop = document.getElementById('ai-messages').scrollHeight;
+        }
+        else if (ev.type === 'tool') { aiAppendToolBubble(ev); aiCurAssistantBubble = null; }
         else if (ev.type === 'approval') {
+          aiCurAssistantBubble = null;
           if (aiAlwaysAllow) {
             const rr = await fetch('/api/ai/agent/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: ev.runId, approved: true }), signal: aiAbort ? aiAbort.signal : undefined });
             if (!rr.ok) { const jj = await rr.json().catch(() => ({})); throw new Error(jj.error || ('Approve gagal (' + rr.status + ')')); }
@@ -1938,6 +2163,8 @@ async function aiSendAgent() {
   stopBtn.classList.remove('hidden');
   aiAbort = new AbortController();
   const runTexts = [];
+  aiCurAssistantBubble = null;
+  aiRunSegments = [];
   try {
     const r = await fetch('/api/ai/agent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: aiMessages }), signal: aiAbort.signal });
     if (!r.ok) { const jj = await r.json().catch(() => ({})); throw new Error(jj.error || ('Agent gagal (' + r.status + ')')); }
@@ -1946,7 +2173,7 @@ async function aiSendAgent() {
     if (e.name === 'AbortError' || e.name === 'AgentStopped') aiAppendBubble('assistant', '[agent dihentikan]');
     else aiAppendBubble('assistant', 'Error: ' + (e.message || 'Agent gagal'));
   } finally {
-    if (runTexts.length) aiMessages.push({ role: 'assistant', content: runTexts.join('\n') });
+    for (const s of aiRunSegments) if (s.trim()) aiMessages.push({ role: 'assistant', content: s });
     aiSaveLocal();
     aiAbort = null;
     sendBtn.disabled = false;
