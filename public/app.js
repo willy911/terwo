@@ -996,13 +996,59 @@ async function loadPma() {
     show('pma-stop', j.running);
     show('pma-open', j.running);
   } catch { /* ignore */ }
+  loadPmaDomain();
 }
 function pmaMsg(txt) { const el = document.getElementById('pma-msg'); if (el) el.textContent = txt || ''; }
+// URL buka phpMyAdmin: domain tunnel bila domain phpMyAdmin aktif (supaya
+// dari perangkat lain tidak malah membuka localhost perangkat itu sendiri),
+// kalau tidak ya URL lokal panel (127.0.0.1:port).
+function pmaOpenUrl() {
+  if (pmadState && pmadState.enabled && pmadState.url) return pmadState.url;
+  return pmaState ? pmaState.url : '';
+}
+let pmadEnabled = false, pmadState = null;
+async function loadPmaDomain() {
+  try {
+    const j = await (await api('/api/pma-domain')).json();
+    pmadEnabled = !!j.enabled; pmadState = j;
+    const st = document.getElementById('pmad-status');
+    st.innerHTML = !j.enabled ? badgeOff('Domain phpMyAdmin nonaktif')
+      : (j.running ? badgeOk('Domain phpMyAdmin aktif') : badgeWarn('Domain phpMyAdmin aktif, connector belum jalan'));
+    const linkEl = document.getElementById('pmad-link');
+    linkEl.innerHTML = (j.enabled && j.hostname)
+      ? '<a class="font-mono text-[13px] text-accent-h underline" target="_blank" rel="noopener" href="https://' + esc(j.hostname) + '">https://' + esc(j.hostname) + '</a>'
+      : '<span class="muted text-sm">Belum ada domain phpMyAdmin</span>';
+    const subEl = document.getElementById('pmad-subdomain');
+    if (j.hostname && document.activeElement !== subEl) {
+      const dot = j.hostname.indexOf('.');
+      subEl.value = dot > 0 ? j.hostname.slice(0, dot) : j.hostname;
+    }
+    document.getElementById('pmad-toggle').textContent = j.enabled ? 'Nonaktifkan Domain phpMyAdmin' : 'Aktifkan Domain phpMyAdmin';
+    refreshIcons();
+  } catch { /* ignore */ }
+}
+document.getElementById('pmad-toggle').addEventListener('click', async () => {
+  const err = document.getElementById('pmad-err'); err.textContent = '';
+  if (pmadEnabled) {
+    if (!confirm('Nonaktifkan domain phpMyAdmin? Route + DNS-nya akan dihapus dari Cloudflare, dan login otomatis lokal kembali aktif.')) return;
+    const r = await api('/api/pma-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    const j = await r.json();
+    if (!j.ok && j.error) err.textContent = j.error;
+  } else {
+    // Peringatan eksplisit: URL publik + auto-login tidak boleh bersamaan.
+    if (!(await confirmDialog({ title: 'Aktifkan domain phpMyAdmin?', message: 'Subdomain ini PUBLIK di internet. Selama domain aktif, login otomatis phpMyAdmin DIMATIKAN — dari perangkat lain kamu harus login pakai user/password MySQL. Pastikan password MySQL kuat sebelum melanjutkan.', okText: 'Aktifkan', danger: true, icon: 'globe' }))) return;
+    const sub = document.getElementById('pmad-subdomain').value.trim();
+    const r = await api('/api/pma-domain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, subdomain: sub }) });
+    const j = await r.json();
+    if (!j.ok && j.error) err.textContent = j.error;
+  }
+  loadPmaDomain(); loadPma();
+});
 // Open ala aaPanel: selalu mengarah ke phpMyAdmin (bukan browser internal).
 // Browser internal tetap ada lewat klik NAMA database (loadDbTables).
 async function openPma(db) {
   if (pmaState && pmaState.running) {
-    window.open(pmaState.url + '/index.php?db=' + encodeURIComponent(db), '_blank');
+    window.open(pmaOpenUrl() + '/index.php?db=' + encodeURIComponent(db), '_blank');
     return;
   }
   if (pmaState && pmaState.installed) {
@@ -1010,7 +1056,7 @@ async function openPma(db) {
     dbMsg('Menyalakan phpMyAdmin…');
     await pmaAction('/api/phpmyadmin/start', null, '');
     setTimeout(() => {
-      if (pmaState && pmaState.running) window.open(pmaState.url + '/index.php?db=' + encodeURIComponent(db), '_blank');
+      if (pmaState && pmaState.running) window.open(pmaOpenUrl() + '/index.php?db=' + encodeURIComponent(db), '_blank');
       else dbMsg('phpMyAdmin gagal dinyalakan — cek kartu phpMyAdmin.');
     }, 1000);
     return;
@@ -1036,7 +1082,7 @@ document.getElementById('pma-install').addEventListener('click', () => {
 });
 document.getElementById('pma-start').addEventListener('click', () => pmaAction('/api/phpmyadmin/start', null, 'Menyalakan phpMyAdmin…'));
 document.getElementById('pma-stop').addEventListener('click', () => pmaAction('/api/phpmyadmin/stop', null, 'Mematikan phpMyAdmin…'));
-document.getElementById('pma-open').addEventListener('click', () => { if (pmaState && pmaState.running) window.open(pmaState.url + '/index.php', '_blank'); });
+document.getElementById('pma-open').addEventListener('click', () => { if (pmaState && pmaState.running) window.open(pmaOpenUrl() + '/index.php', '_blank'); });
 document.getElementById('pma-save').addEventListener('click', () => pmaAction('/api/phpmyadmin/config', {
   port: parseInt(document.getElementById('pma-port').value, 10),
   autoStart: document.getElementById('pma-autostart').checked,

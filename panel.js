@@ -2196,10 +2196,12 @@ function apiTunnelStop(res) {
 // ditulis panel dari kredensial MySQL yang tersimpan di panel (auth_type
 // config), jadi tombol phpMyAdmin per database langsung membuka
 // <url>/index.php?db=<nama> tanpa halaman login.
-// Keamanan: bind HANYA 127.0.0.1 — phpMyAdmin tidak ikut tunnel panel,
-// jadi hanya bisa dibuka dari perangkat yang sama. Dengan auth config,
-// siapa pun yang bisa mencapai port itu = user DB tersebut; jangan
-// mem-proxy-kan port ini ke publik.
+// Keamanan: bind HANYA 127.0.0.1. Domain phpMyAdmin via tunnel (pmaDomain)
+// adalah SATU-SATUNYA pengecualian yang disengaja: selama domain itu aktif,
+// pmaWriteConfig() menulis auth_type='cookie' (form login, tanpa kredensial
+// tersimpan) menggantikan auto-login — karena URL publik + auto-login root
+// = siapa pun langsung jadi admin DB. Nonaktifkan domain = kembali ke
+// auth config (auto-login lokal) dan route + DNS dihapus.
 const PMA_FILE = path.join(DATA_DIR, 'phpmyadmin.json');
 const PMA_DIR = path.join(DATA_DIR, 'phpmyadmin');
 const PMA_ZIP_URL = process.env.PMA_ZIP_URL || 'https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.zip';
@@ -2231,21 +2233,32 @@ function pmaWriteConfig() {
   // Kredensial diambil dari config MySQL panel saat ini (bukan hardcode),
   // jadi kalau user mengubah kredensial DB lalu me-restart phpMyAdmin,
   // login otomatisnya ikut berubah. Blowfish dibuat sekali dan disimpan.
+  // PENGECUALIAN: selama domain phpMyAdmin via tunnel aktif, pakai
+  // auth_type='cookie' (form login, kredensial TIDAK ditulis ke file) —
+  // php -S membaca ulang config.inc.php tiap request, jadi pergantian mode
+  // ini berlaku seketika tanpa restart phpMyAdmin.
   if (!pmaCfg.blowfish) { pmaCfg.blowfish = crypto.randomBytes(16).toString('hex'); savePmaCfg(); }
   const cfg = dbCfgFor('mysql');
+  const tunneled = !!(cfCfg && cfCfg.pmaDomain && cfCfg.pmaDomain.enabled);
   const lines = [
     '<?php',
     "$cfg['blowfish_secret'] = '" + phpEscape(pmaCfg.blowfish) + "';",
     '$i = 0;',
     '$i++;',
-    "$cfg['Servers'][$i]['auth_type'] = 'config';",
+    "$cfg['Servers'][$i]['auth_type'] = '" + (tunneled ? 'cookie' : 'config') + "';",
     "$cfg['Servers'][$i]['host'] = '" + phpEscape(cfg.host || '127.0.0.1') + "';",
     "$cfg['Servers'][$i]['port'] = '" + phpEscape(cfg.port || 3306) + "';",
-    "$cfg['Servers'][$i]['user'] = '" + phpEscape(cfg.user || 'root') + "';",
-    "$cfg['Servers'][$i]['password'] = '" + phpEscape(cfg.password || '') + "';",
-    "$cfg['Servers'][$i]['AllowNoPassword'] = true;",
-    "$cfg['Servers'][$i]['compress'] = false;",
   ];
+  if (!tunneled) {
+    lines.push(
+      "$cfg['Servers'][$i]['user'] = '" + phpEscape(cfg.user || 'root') + "';",
+      "$cfg['Servers'][$i]['password'] = '" + phpEscape(cfg.password || '') + "';",
+      "$cfg['Servers'][$i]['AllowNoPassword'] = true;",
+    );
+  } else {
+    lines.push("$cfg['Servers'][$i]['AllowNoPassword'] = false;");
+  }
+  lines.push("$cfg['Servers'][$i]['compress'] = false;");
   fs.writeFileSync(path.join(PMA_DIR, 'config.inc.php'), lines.join('\n') + '\n', { mode: 0o600 });
 }
 function runCmd(cmd, args) {
@@ -2334,7 +2347,16 @@ async function apiPmaConfig(req, res) {
     const portChanged = port !== pmaCfg.port;
     pmaCfg.port = port; pmaCfg.autoStart = !!b.autoStart; savePmaCfg();
     if (wasRunning && portChanged) { pmaStop(); await pmaStart(); }
-    sendJson(res, 200, Object.assign({ ok: true }, pmaPublic()));
+    // Port berubah sementara domain tunnel aktif: route-nya harus ikut
+    // pindah, kalau tidak tunnel tetap mengarah ke port lama (mati).
+    // Gagal republish tidak menggagalkan simpan config — tapi dilaporkan
+    // sebagai peringatan supaya user bisa toggle domain off/on.
+    let warnings = [];
+    if (portChanged && pmaDomainCfg().enabled && pmaDomainCfg().hostname) {
+      try { await cfPublishRouteResilient(pmaDomainCfg().hostname, 'http://127.0.0.1:' + pmaCfg.port); }
+      catch (e) { warnings.push('Route tunnel phpMyAdmin gagal diperbarui ke port baru (' + e.message + ') — nonaktifkan lalu aktifkan lagi domainnya.'); }
+    }
+    sendJson(res, 200, Object.assign({ ok: true, warnings }, pmaPublic()));
   } catch (e) { sendJson(res, 400, { ok: false, error: e.message }); }
 }
 
@@ -2361,10 +2383,14 @@ function loadCfCfg() {
       tunnelName: String(c.tunnelName || 'terwo'),
       // panelDomain WAJIB ikut dimuat: kalau tidak, restart panel akan
       // menghilangkan domain panel yang aktif (runner tak ikut nyala lagi).
+      // pmaDomain sama wajibnya, dengan alasan yang sama.
       panelDomain: (c.panelDomain && typeof c.panelDomain === 'object')
         ? { enabled: !!c.panelDomain.enabled, hostname: String(c.panelDomain.hostname || '') }
+        : { enabled: false, hostname: '' },
+      pmaDomain: (c.pmaDomain && typeof c.pmaDomain === 'object')
+        ? { enabled: !!c.pmaDomain.enabled, hostname: String(c.pmaDomain.hostname || '') }
         : { enabled: false, hostname: '' } };
-  } catch { return { apiToken: '', accountId: '', zoneId: '', domain: '', tunnelId: '', tunnelToken: '', tunnelName: 'terwo', panelDomain: { enabled: false, hostname: '' } }; }
+  } catch { return { apiToken: '', accountId: '', zoneId: '', domain: '', tunnelId: '', tunnelToken: '', tunnelName: 'terwo', panelDomain: { enabled: false, hostname: '' }, pmaDomain: { enabled: false, hostname: '' } }; }
 }
 function saveCfCfg() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -2693,6 +2719,126 @@ async function apiPanelDomainSet(req, res) {
     if (c.hostname) await cfUnpublishPanelDomain(c.hostname);
     cfCfg.panelDomain = { enabled: false, hostname: '' }; saveCfCfg();
     sendJson(res, 200, Object.assign({ ok: true }, panelDomainPublic()));
+  }
+}
+
+// ================= Domain phpMyAdmin via tunnel (Cloudflare API) =========
+// Pola yang sama persis dengan domain panel (v1.20.4), tapi service-nya
+// port phpMyAdmin, bukan port panel — supaya phpMyAdmin bisa dibuka dari
+// perangkat lain lewat subdomain (mis. pma.flaznexa.cloud), bukan hanya
+// dari HP yang sama. Dua perbedaan penting dari domain panel:
+// 1) Keamanan: selama domain aktif, pmaWriteConfig() menulis auth cookie
+//    (form login) menggantikan auto-login — URL publik + auto-login root
+//    tidak boleh terjadi. Nonaktifkan = kembali ke auto-login lokal.
+// 2) phpMyAdmin dinyalakan dulu bila berhenti, supaya tunnel tidak mengarah
+//    ke service mati (502). Gagal nyala = rollback total seperti runner.
+let pmaDomainProc = null, pmaDomainStopping = false, pmaDomainRestartTimer = null;
+function pmaDomainCfg() {
+  const c = cfCfg.pmaDomain;
+  return (c && typeof c === 'object') ? c : { enabled: false, hostname: '' };
+}
+function pmaDomainPublic() {
+  const c = pmaDomainCfg();
+  return { enabled: !!c.enabled, hostname: c.hostname || '',
+    running: !!pmaDomainProc, url: (c.enabled && c.hostname) ? 'https://' + c.hostname : '' };
+}
+async function startPmaDomainRunner() {
+  if (pmaDomainProc) return;
+  await mustBin('cloudflared', 'cloudflared is not installed. Install it first via the Store menu.');
+  const token = String(cfCfg.tunnelToken || '').trim();
+  if (!token) throw new Error('Tunnel otomatis belum siap — isi konfigurasi Cloudflare di Settings, lalu Setup & Uji, kemudian aktifkan lagi domain ini');
+  pmaDomainStopping = false;
+  if (pmaDomainRestartTimer) { clearTimeout(pmaDomainRestartTimer); pmaDomainRestartTimer = null; }
+  const child = spawn('cloudflared', ['tunnel', '--no-autoupdate', 'run', '--token', token],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  pmaDomainProc = child;
+  child.on('error', (e) => {
+    console.log('PMA domain runner failed:', e.message);
+    pmaDomainProc = null;
+  });
+  child.on('exit', () => {
+    pmaDomainProc = null;
+    // Auto-reconnect selama domain phpMyAdmin masih aktif (bukan stop manual).
+    if (!pmaDomainStopping && pmaDomainCfg().enabled && !pmaDomainRestartTimer) {
+      pmaDomainRestartTimer = setTimeout(() => {
+        pmaDomainRestartTimer = null;
+        if (pmaDomainCfg().enabled && !pmaDomainProc) {
+          startPmaDomainRunner().catch((e) => console.log('PMA domain auto-restart failed:', e.message));
+        }
+      }, 5000);
+    }
+  });
+}
+function stopPmaDomainRunner() {
+  pmaDomainStopping = true;
+  if (pmaDomainRestartTimer) { clearTimeout(pmaDomainRestartTimer); pmaDomainRestartTimer = null; }
+  if (pmaDomainProc) { try { pmaDomainProc.kill(); } catch {} pmaDomainProc = null; }
+}
+async function cfPublishPmaDomain(hostnameInput) {
+  if (!cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId || !cfCfg.domain) {
+    throw new Error('Konfigurasi Cloudflare belum lengkap — isi API token, Account ID, Zone ID, dan domain di Settings dulu, lalu Setup & Uji');
+  }
+  if (!pmaInstalled()) throw new Error('phpMyAdmin belum terpasang — klik Pasang dulu di kartu phpMyAdmin');
+  const hostname = cfNormalizeHostname(hostnameInput, cfCfg.domain);
+  cfValidateHostname(hostname, cfCfg.domain);
+  const clash = sites.find((s) => s.tunnel && s.tunnel.hostname === hostname);
+  if (clash) throw new Error('Hostname ' + hostname + ' sudah dipakai website ' + clash.name + ' — pakai subdomain lain untuk phpMyAdmin');
+  if (panelDomainCfg().enabled && panelDomainCfg().hostname === hostname) {
+    throw new Error('Hostname ' + hostname + ' sudah dipakai domain panel — pakai subdomain lain untuk phpMyAdmin');
+  }
+  return cfPublishRouteResilient(hostname, 'http://127.0.0.1:' + pmaCfg.port);
+}
+async function cfUnpublishPmaDomain(hostname) {
+  if (!hostname || !cfCfg.tunnelId || !cfCfg.apiToken || !cfCfg.accountId || !cfCfg.zoneId) return;
+  try {
+    const { config, ingress } = await cfGetIngress();
+    const kept = ingress.filter((r) => r.hostname !== hostname);
+    if (!kept.some((r) => !r.hostname)) kept.push({ service: 'http_status:404' });
+    await cfPutIngress(kept, config);
+  } catch (e) { console.log('CF unpublish pma route failed:', e.message); }
+  try {
+    const list = await cfApi('GET', '/zones/' + cfCfg.zoneId + '/dns_records?type=CNAME&name=' + encodeURIComponent(hostname));
+    for (const rec of (Array.isArray(list) ? list : [])) {
+      try { await cfApi('DELETE', '/zones/' + cfCfg.zoneId + '/dns_records/' + rec.id); } catch {}
+    }
+  } catch (e) { console.log('CF unpublish pma DNS failed:', e.message); }
+}
+function apiPmaDomainGet(res) { sendJson(res, 200, Object.assign({ ok: true }, pmaDomainPublic())); }
+async function apiPmaDomainSet(req, res) {
+  const b = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  if (b.enabled) {
+    // Publikasikan dulu SEBELUM enabled disimpan (sama seperti domain panel).
+    let hostname;
+    try { hostname = await cfPublishPmaDomain(b.subdomain || b.hostname || 'pma'); }
+    catch (e) { throw new Error('Aktifkan domain phpMyAdmin gagal (publish route/DNS): ' + e.message); }
+    cfCfg.pmaDomain = { enabled: true, hostname }; saveCfCfg();
+    // Mode auth ikut berubah (cookie) begitu enabled tersimpan — dan
+    // phpMyAdmin dinyalakan bila berhenti, supaya tunnel tidak 502.
+    try {
+      if (pmaInstalled()) pmaWriteConfig();
+      if (pmaInstalled() && !pmaProc) await pmaStart();
+    } catch (e) {
+      await cfUnpublishPmaDomain(hostname);
+      cfCfg.pmaDomain = { enabled: false, hostname: '' }; saveCfCfg();
+      if (pmaInstalled()) pmaWriteConfig();
+      throw new Error('Aktifkan domain phpMyAdmin gagal (menyalakan phpMyAdmin): ' + e.message);
+    }
+    try { await startPmaDomainRunner(); }
+    catch (e) {
+      await cfUnpublishPmaDomain(hostname);
+      cfCfg.pmaDomain = { enabled: false, hostname: '' }; saveCfCfg();
+      if (pmaInstalled()) pmaWriteConfig();
+      throw new Error('Aktifkan domain phpMyAdmin gagal (menjalankan connector): ' + e.message);
+    }
+    sendJson(res, 200, Object.assign({ ok: true }, pmaDomainPublic()));
+  } else {
+    const c = pmaDomainCfg();
+    stopPmaDomainRunner();
+    if (c.hostname) await cfUnpublishPmaDomain(c.hostname);
+    cfCfg.pmaDomain = { enabled: false, hostname: '' }; saveCfCfg();
+    // Kembali ke auto-login lokal (config) begitu domain dimatikan.
+    if (pmaInstalled()) pmaWriteConfig();
+    sendJson(res, 200, Object.assign({ ok: true }, pmaDomainPublic()));
   }
 }
 
@@ -3053,6 +3199,8 @@ async function handleRequest(req, res) {
     if (req.method === 'POST' && p === '/api/phpmyadmin/start') return apiPmaStart(req, res);
     if (req.method === 'POST' && p === '/api/phpmyadmin/stop') return apiPmaStop(res);
     if (req.method === 'POST' && p === '/api/phpmyadmin/config') return apiPmaConfig(req, res);
+    if (req.method === 'GET' && p === '/api/pma-domain') return apiPmaDomainGet(res);
+    if (req.method === 'POST' && p === '/api/pma-domain') return apiPmaDomainSet(req, res);
     // cloudflare tunnel (auto tunneling)
     if (req.method === 'GET' && p === '/api/tunnel') return apiTunnelGet(res);
     if (req.method === 'POST' && p === '/api/tunnel/start') return apiTunnelStart(req, res);
@@ -3124,6 +3272,14 @@ server.listen(PORT, HOST, () => {
   // Domain panel yang masih aktif sebelum restart ikut nyala lagi.
   if (panelDomainCfg().enabled && panelDomainCfg().hostname) {
     startPanelDomainRunner().catch((e) => console.log('Auto-start panel domain failed:', e.message));
+  }
+  // Domain phpMyAdmin yang masih aktif sebelum restart ikut nyala lagi,
+  // dan phpMyAdmin-nya sendiri dinyalakan dulu supaya tunnel tidak 502.
+  if (pmaDomainCfg().enabled && pmaDomainCfg().hostname) {
+    (async () => {
+      try { if (pmaInstalled() && !pmaProc) await pmaStart(); } catch (e) { console.log('Auto-start phpMyAdmin for domain failed:', e.message); }
+      try { await startPmaDomainRunner(); } catch (e) { console.log('Auto-start PMA domain failed:', e.message); }
+    })();
   }
   // Auto-start semuanya saat panel dijalankan (pm2 start terwo):
   // 1) database yang config-nya pernah disimpan langsung connect,

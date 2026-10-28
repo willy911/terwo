@@ -203,7 +203,20 @@
         <label class="lbl-check"><input id="pma-autostart" type="checkbox" class="h-4 w-4 accent-accent">Auto-start saat panel jalan</label>
         <button id="pma-save" class="btn-ghost btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Simpan</button>
       </div>
-      <p class="hint">Login otomatis pakai kredensial MySQL yang tersimpan di panel. phpMyAdmin hanya di-bind ke 127.0.0.1 — tidak ikut tunnel panel, jadi bukanya dari perangkat yang sama.</p>
+      <p class="hint">Login otomatis pakai kredensial MySQL yang tersimpan di panel. phpMyAdmin hanya di-bind ke 127.0.0.1 — tanpa domain di bawah ini, bukanya hanya dari perangkat yang sama.</p>
+      <div class="mt-4 border-t border-border pt-3">
+        <h5 class="mb-2 flex items-center gap-2 text-sm font-semibold"><i data-lucide="globe" class="h-4 w-4 text-accent-h"></i>Domain untuk phpMyAdmin (Cloudflare API)</h5>
+        <p class="hint mb-3">Supaya bisa dibuka dari perangkat lain lewat subdomain (mis. pma.flaznexa.cloud) — memakai konfigurasi Domain Otomatis di Settings dan tunnel bersama yang sama. Perhatian: selama domain aktif, login otomatis DIMATIKAN dan phpMyAdmin memakai form login (pakai user/password MySQL). Nonaktifkan menghapus route + DNS-nya.</p>
+        <div class="frow">
+          <label class="lbl">Subdomain phpMyAdmin<input id="pmad-subdomain" class="inp" placeholder="pma"></label>
+          <span id="pmad-status" class="muted text-sm">checking…</span>
+        </div>
+        <div class="frow">
+          <span id="pmad-link"></span>
+          <button id="pmad-toggle" class="btn btn-sm">Aktifkan Domain phpMyAdmin</button>
+          <span id="pmad-err" class="err"></span>
+        </div>
+      </div>
       <p id="pma-msg" class="hint"></p>
     </div>
     <div class="card mb-4 !p-4">
