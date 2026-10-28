@@ -1480,12 +1480,41 @@ document.getElementById('tun-switch').addEventListener('change', async (e) => {
   }
   loadTunnel();
 });
+// Salin teks yang tahan di HP: clipboard API modern dulu (butuh secure
+// context), lalu fallback textarea dengan focus + setSelectionRange (tanpa
+// ini iOS gagal diam-diam). Mengembalikan true bila berhasil.
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* jatuh ke fallback */ }
+  }
+  try {
+    const t = document.createElement('textarea');
+    t.value = text;
+    t.setAttribute('readonly', '');
+    t.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;';
+    document.body.appendChild(t);
+    t.focus();
+    t.select();
+    t.setSelectionRange(0, t.value.length);
+    const ok = document.execCommand('copy');
+    t.remove();
+    return !!ok;
+  } catch { return false; }
+}
 document.getElementById('tun-copy').addEventListener('click', async () => {
+  const btn = document.getElementById('tun-copy');
+  const err = document.getElementById('tun-err');
+  err.textContent = '';
   const u = document.getElementById('tun-url').dataset.url || '';
-  if (!u) return;
-  try { await navigator.clipboard.writeText(u); } catch {
-    const t = document.createElement('textarea'); t.value = u; document.body.appendChild(t);
-    t.select(); document.execCommand('copy'); t.remove();
+  // Dulu: tanpa URL, klik diam saja tanpa penjelasan — persis keluhan
+  // "tidak bisa di copy" padahal tidak ada yang bisa dicopy.
+  if (!u) { err.textContent = 'Belum ada URL publik untuk dicopy — nyalakan dulu tunnel panelnya sampai URL-nya tampil.'; return; }
+  if (await copyText(u)) {
+    const old = btn.innerHTML;
+    btn.innerHTML = 'Tersalin!';
+    setTimeout(() => { btn.innerHTML = old; refreshIcons(); }, 2000);
+  } else {
+    err.textContent = 'Gagal menyalin otomatis — tekan-tahan link URL-nya lalu pilih Salin.';
   }
 });
 
