@@ -181,7 +181,7 @@ async function loadFiles() {
     listEl.innerHTML = '';
     if (curDir) {
       const tr = document.createElement('tr');
-      tr.innerHTML = '<td colspan="4"><button class="crumb" id="up">' + ic('arrow-up', 'h-[15px] w-[15px]') + ' ..</button></td>';
+      tr.innerHTML = '<td colspan="5"><button class="crumb" id="up">' + ic('arrow-up', 'h-[15px] w-[15px]') + ' ..</button></td>';
       listEl.appendChild(tr);
       tr.querySelector('#up').addEventListener('click', () => {
         curDir = curDir.split('/').slice(0, -1).join('/');
@@ -194,6 +194,7 @@ async function loadFiles() {
         '<td><span class="fname inline-flex cursor-pointer items-center gap-2 font-medium hover:text-accent-h" data-n="' + esc(e.name) + '" data-t="' + e.type + '">' + fileIcon(e) + ' ' + esc(e.name) + '</span></td>' +
         '<td class="muted">' + (e.type === 'dir' ? '—' : fmtSize(e.size)) + '</td>' +
         '<td class="muted">' + fmtDate(e.mtime) + '</td>' +
+        '<td class="muted font-mono">' + (e.mode || '—') + '</td>' +
         '<td><div class="row-actions"></div></td>';
       const acts = tr.querySelector('.row-actions');
       const mkBtn = (icn, fn, title) => {
@@ -218,11 +219,12 @@ async function loadFiles() {
       }
       mkBtn('archive', () => zipEntry(e.name), 'Archive as ZIP');
       mkBtn('pencil-line', () => renameEntry(e.name), 'Rename');
+      mkBtn('key-round', () => openPerm(e.name, e.mode), 'Permissions');
       mkBtn('trash-2', () => deleteEntry(e.name), 'Delete');
       listEl.appendChild(tr);
     }
     if (!j.entries.length) {
-      listEl.innerHTML += '<tr><td colspan="4" class="muted">Empty folder</td></tr>';
+      listEl.innerHTML += '<tr><td colspan="5" class="muted">Empty folder</td></tr>';
     }
     refreshIcons();
   } catch (e) {
@@ -291,7 +293,7 @@ async function unzipEntry(name) {
   const j = await r.json();
   if (j.ok) loadFiles(); else showFileErr(j.error || 'Failed');
 }
-// upload (JSON base64)
+// upload (JSON base64, dengan progress bar via XHR)
 document.getElementById('btn-upload').addEventListener('click', () => {
   document.getElementById('file-input').click();
 });
@@ -299,23 +301,123 @@ document.getElementById('file-input').addEventListener('change', (ev) => {
   const f = ev.target.files[0];
   ev.target.value = '';
   if (!f) return;
-  const rd = new FileReader();
-  rd.onload = async () => {
-    const b64 = String(rd.result).split(',')[1] || '';
-    try {
-      const r = await api('/api/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: curDir, name: f.name, data: b64 }),
-      });
-      const j = await r.json();
-      if (j.ok) loadFiles(); else showFileErr(j.error || 'Upload failed');
-    } catch (e) {
-      showFileErr(e.message || 'Upload failed');
-    }
+  const btnUp = document.getElementById('btn-upload');
+  const progEl = document.getElementById('upload-progress');
+  const barEl = document.getElementById('upload-bar');
+  const statusEl = document.getElementById('upload-status');
+  const pctEl = document.getElementById('upload-pct');
+  const showProg = (pct, status) => {
+    progEl.classList.remove('hidden');
+    barEl.style.width = pct + '%';
+    statusEl.textContent = status;
+    pctEl.textContent = pct + '%';
   };
-  rd.onerror = () => showFileErr('Failed to read file');
+  const hideProg = () => {
+    progEl.classList.add('hidden');
+    barEl.style.width = '0%';
+    btnUp.disabled = false;
+  };
+  btnUp.disabled = true;
+  showProg(0, 'Membaca ' + f.name + '…');
+  const rd = new FileReader();
+  rd.onprogress = (e) => {
+    if (e.lengthComputable) showProg(Math.round((e.loaded / e.total) * 100), 'Membaca ' + f.name + '…');
+  };
+  rd.onload = () => {
+    const b64 = String(rd.result).split(',')[1] || '';
+    const body = JSON.stringify({ path: curDir, name: f.name, data: b64 });
+    showProg(0, 'Mengupload ' + f.name + '…');
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload');
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round((e.loaded / e.total) * 100);
+      showProg(pct, 'Mengupload ' + f.name + ' (' + fmtSize(e.loaded) + ' / ' + fmtSize(e.total) + ')');
+    };
+    xhr.onload = () => {
+      if (xhr.status === 401) { location.href = '/login'; return; }
+      try {
+        const j = JSON.parse(xhr.responseText);
+        if (j.ok) { hideProg(); loadFiles(); }
+        else { hideProg(); showFileErr(j.error || 'Upload failed'); }
+      } catch (e) { hideProg(); showFileErr('Upload failed'); }
+    };
+    xhr.onerror = () => { hideProg(); showFileErr('Upload failed'); };
+    xhr.send(body);
+  };
+  rd.onerror = () => { hideProg(); showFileErr('Failed to read file'); };
   rd.readAsDataURL(f);
+});
+
+// ---------- permission editor ----------
+const permModal = document.getElementById('perm-modal');
+const permOctal = document.getElementById('perm-octal');
+const permErr = document.getElementById('perm-err');
+let permName = null;
+const PERM_GROUPS = [
+  { ids: ['perm-u-r', 'perm-u-w', 'perm-u-x'] },
+  { ids: ['perm-g-r', 'perm-g-w', 'perm-g-x'] },
+  { ids: ['perm-o-r', 'perm-o-w', 'perm-o-x'] },
+];
+function permBoxesToOctal() {
+  let out = '';
+  for (const g of PERM_GROUPS) {
+    let d = 0;
+    if (document.getElementById(g.ids[0]).checked) d += 4;
+    if (document.getElementById(g.ids[1]).checked) d += 2;
+    if (document.getElementById(g.ids[2]).checked) d += 1;
+    out += d;
+  }
+  return out;
+}
+function permOctalToBoxes(oct) {
+  const digits = String(oct).split('').map((c) => parseInt(c, 8));
+  PERM_GROUPS.forEach((g, i) => {
+    const d = digits[i] || 0;
+    document.getElementById(g.ids[0]).checked = !!(d & 4);
+    document.getElementById(g.ids[1]).checked = !!(d & 2);
+    document.getElementById(g.ids[2]).checked = !!(d & 1);
+  });
+}
+function permSyncFromBoxes() { permOctal.value = permBoxesToOctal(); }
+function permSyncFromOctal() {
+  const v = permOctal.value.trim();
+  if (/^[0-7]{3}$/.test(v)) permOctalToBoxes(v);
+}
+PERM_GROUPS.forEach((g) => g.ids.forEach((id) => {
+  document.getElementById(id).addEventListener('change', permSyncFromBoxes);
+}));
+permOctal.addEventListener('input', permSyncFromOctal);
+function openPerm(name, mode) {
+  permName = name;
+  document.getElementById('perm-title').textContent = 'Permissions: ' + name;
+  permOctal.value = /^[0-7]{3}$/.test(mode || '') ? mode : '644';
+  permOctalToBoxes(permOctal.value);
+  permErr.textContent = '';
+  permModal.classList.remove('hidden');
+  refreshIcons();
+}
+function closePerm() { permModal.classList.add('hidden'); permName = null; }
+document.getElementById('perm-close').addEventListener('click', closePerm);
+document.getElementById('perm-cancel').addEventListener('click', closePerm);
+permModal.addEventListener('click', (e) => { if (e.target === permModal) closePerm(); });
+document.getElementById('perm-save').addEventListener('click', async () => {
+  const mode = permOctal.value.trim();
+  if (!/^[0-7]{3}$/.test(mode)) { permErr.textContent = 'Mode harus 3 digit oktal (000–777)'; return; }
+  permErr.textContent = '';
+  try {
+    const r = await api('/api/files/chmod', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: curDir, name: permName, mode }),
+    });
+    const j = await r.json();
+    if (j.ok) { closePerm(); loadFiles(); }
+    else permErr.textContent = j.error || 'Failed';
+  } catch (e) {
+    permErr.textContent = e.message || 'Failed';
+  }
 });
 
 // ---------- editor file ----------

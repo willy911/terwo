@@ -191,12 +191,13 @@ async function apiFiles(url, res) {
       // show dotfiles too, no problem
     }
     const full = path.join(dir, e.name);
-    let size = 0, mtime = 0;
+    let size = 0, mtime = 0, mode = null;
     try {
       const st = await fsp.stat(full);
       size = st.size; mtime = st.mtimeMs;
+      mode = (st.mode & 0o777).toString(8).padStart(3, '0');
     } catch { /* ignore */ }
-    out.push({ name: e.name, type: e.isDirectory() ? 'dir' : 'file', size, mtime });
+    out.push({ name: e.name, type: e.isDirectory() ? 'dir' : 'file', size, mtime, mode });
   }
   out.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
   sendJson(res, 200, { path: relOf(dir), entries: out });
@@ -227,6 +228,17 @@ async function apiDelete(req, res) {
   const { path: rel, name } = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
   await fsp.rm(path.join(safePath(rel || ''), safeName(name)), { recursive: true, force: true });
   sendJson(res, 200, { ok: true });
+}
+
+async function apiChmod(req, res) {
+  const { path: rel, name, mode } = JSON.parse((await readBody(req, 1e6)).toString('utf8'));
+  if (typeof mode !== 'string' || !/^[0-7]{3}$/.test(mode)) {
+    throw new Error('Invalid mode (use 3 octal digits, e.g. 644)');
+  }
+  const full = path.join(safePath(rel || ''), safeName(name));
+  await fsp.chmod(full, parseInt(mode, 8));
+  const st = await fsp.stat(full);
+  sendJson(res, 200, { ok: true, mode: (st.mode & 0o777).toString(8).padStart(3, '0') });
 }
 
 async function apiRead(req, res) {
@@ -3213,6 +3225,7 @@ async function handleRequest(req, res) {
     // file manager tambahan
     if (req.method === 'POST' && p === '/api/files/zip') return apiFileZip(req, res);
     if (req.method === 'POST' && p === '/api/files/unzip') return apiFileUnzip(req, res);
+    if (req.method === 'POST' && p === '/api/files/chmod') return apiChmod(req, res);
     if (req.method === 'GET' && p === '/api/files/preview') return apiFilePreview(url, res);
 
     sendJson(res, 404, { error: 'Not found' });

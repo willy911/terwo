@@ -89,9 +89,13 @@
       </div>
     </div>
     <div id="file-error" class="err mb-2"></div>
+    <div id="upload-progress" class="mb-2 hidden">
+      <div class="mb-1 flex items-center justify-between text-xs"><span id="upload-status" class="muted">Uploading…</span><span id="upload-pct" class="muted"></span></div>
+      <div class="overflow-hidden rounded-full bg-border" style="height:8px"><div id="upload-bar" class="bg-accent transition-all" style="height:100%;width:0%"></div></div>
+    </div>
     <div class="tbl-wrap">
     <table class="tbl">
-      <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Perm</th><th>Actions</th></tr></thead>
       <tbody id="file-list"></tbody>
     </table>
     </div>
@@ -520,6 +524,30 @@
     <div class="mt-4 flex justify-end">
       <button id="editor-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Save</button>
     </div>
+  </div>
+</div>
+
+<!-- modal permission -->
+<div id="perm-modal" class="fixed inset-0 z-50 flex hidden items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+  <div class="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl">
+    <div class="mb-4 flex items-center justify-between"><span id="perm-title" class="font-semibold">Permissions</span><button id="perm-close" class="btn-icon"><i data-lucide="x" class="h-4 w-4"></i></button></div>
+    <div class="mb-3 flex items-center gap-2">
+      <span class="text-sm text-muted">Octal:</span>
+      <input id="perm-octal" class="inp font-mono" style="width:90px" maxlength="3" inputmode="numeric" placeholder="644">
+    </div>
+    <table class="tbl">
+      <thead><tr><th></th><th>Read</th><th>Write</th><th>Execute</th></tr></thead>
+      <tbody>
+        <tr><td>Owner</td><td><input type="checkbox" id="perm-u-r" class="accent-accent"></td><td><input type="checkbox" id="perm-u-w" class="accent-accent"></td><td><input type="checkbox" id="perm-u-x" class="accent-accent"></td></tr>
+        <tr><td>Group</td><td><input type="checkbox" id="perm-g-r" class="accent-accent"></td><td><input type="checkbox" id="perm-g-w" class="accent-accent"></td><td><input type="checkbox" id="perm-g-x" class="accent-accent"></td></tr>
+        <tr><td>Other</td><td><input type="checkbox" id="perm-o-r" class="accent-accent"></td><td><input type="checkbox" id="perm-o-w" class="accent-accent"></td><td><input type="checkbox" id="perm-o-x" class="accent-accent"></td></tr>
+      </tbody>
+    </table>
+    <div class="mt-4 flex justify-end gap-2">
+      <button id="perm-cancel" class="btn-ghost btn-sm">Cancel</button>
+      <button id="perm-save" class="btn btn-sm"><i data-lucide="save" class="h-4 w-4"></i>Save</button>
+    </div>
+    <p id="perm-err" class="err mt-2"></p>
   </div>
 </div>
 
